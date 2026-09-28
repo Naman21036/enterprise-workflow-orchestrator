@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0.0",
+  "capability_id": "member_profile_lookup",
+  "version": "1.0.0",
+  "name": "Member Profile Lookup",
+  "description": "Find a member and view profile details",
+  "target_application": "APEX Federal",
+  "surface_type": "web",
+  "parameters": [
+    {
+      "name": "member_id",
+      "param_type": "string",
+      "description": "Member ID",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "member_name",
+      "shape": "string",
+      "selector": "#member-name-val",
+      "attribute": null,
+      "description": "Member Name"
+    }
+  ],
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target": {
+        "primary_selector": "body",
+        "fallback_selectors": [],
+        "text_fallback": null,
+        "aria_fallback": null
+      },
+      "value_expression": "http://localhost:3001",
+      "parameter_ref": null,
+      "checkpoints": [],
+      "description": "Navigate to APEX Federal"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target": {
+        "primary_selector": "#member-id-input",
+        "fallback_selectors": [
+          "input[name=\"member_id\"]"
+        ],
+        "text_fallback": null,
+        "aria_fallback": null
+      },
+      "value_expression": "${inputs.member_id}",
+      "parameter_ref": "member_id",
+      "checkpoints": [],
+      "description": "Fill member ID"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target": {
+        "primary_selector": "#search-btn",
+        "fallback_selectors": [
+          "button[name=\"search\"]"
+        ],
+        "text_fallback": "Search",
+        "aria_fallback": null
+      },
+      "value_expression": null,
+      "parameter_ref": null,
+      "checkpoints": [],
+      "description": "Click search"
+    }
+  ],
+  "success_condition": {
+    "rule_type": "element_visible",
+    "target": "#member-name-val",
+    "description": "Member name visible"
+  },
+  "safety_metadata": {
+    "risk_level": "SAFE",
+    "allowed_routes": [
+      "/",
+      "/member/*"
+    ]
+  },
+  "creation_metadata": {
+    "compiled_at": "2026-09-27T10:00:00Z",
+    "goal": "Search for member and view profile details"
+  }
+}

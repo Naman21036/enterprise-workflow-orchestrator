@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+*.db
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Playwright
+test-results/
+playwright-report/
+
+# Environment
+.env
+!.env.example
+
+# Antigravity / IDE
+.gemini/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

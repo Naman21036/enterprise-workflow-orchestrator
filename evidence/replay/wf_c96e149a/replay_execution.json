@@ -1,0 +1,52 @@
+{
+  "run_id": "wf_c96e149a",
+  "capability_id": "member_savings_lookup",
+  "status": "SUCCESS",
+  "inputs": {
+    "member_id": "[REDACTED]"
+  },
+  "output_fields": [
+    "savings_balance",
+    "member_name",
+    "member_id"
+  ],
+  "outputs_redacted": true,
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target_selector": "body",
+      "status": "SUCCESS",
+      "duration_ms": 689,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_c96e149a\\step_1.png"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target_selector": "#member-id-input",
+      "status": "SUCCESS",
+      "duration_ms": 209,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_c96e149a\\step_2.png"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target_selector": "#search-btn",
+      "status": "SUCCESS",
+      "duration_ms": 669,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_c96e149a\\step_3.png"
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target_selector": "#savings-balance-val",
+      "status": "SUCCESS",
+      "duration_ms": 84,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_c96e149a\\step_4.png"
+    }
+  ]
+}

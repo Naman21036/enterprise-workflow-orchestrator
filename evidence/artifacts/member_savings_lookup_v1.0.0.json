@@ -1,0 +1,129 @@
+{
+  "schema_version": "1.0.0",
+  "capability_id": "member_savings_lookup",
+  "version": "1.0.0",
+  "name": "Member Savings Lookup",
+  "description": "Find a member by ID and retrieve their current savings balance from APEX Federal Core Banking UI.",
+  "target_application": "APEX Federal",
+  "surface_type": "web",
+  "parameters": [
+    {
+      "name": "member_id",
+      "param_type": "string",
+      "description": "Target Member ID to query",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "shape": "currency",
+      "selector": "#savings-balance-val",
+      "attribute": null,
+      "description": "Extracted member savings balance"
+    },
+    {
+      "name": "member_name",
+      "shape": "string",
+      "selector": "#member-name-val",
+      "attribute": null,
+      "description": "Extracted member full name"
+    },
+    {
+      "name": "member_id",
+      "shape": "string",
+      "selector": "#member-id-val",
+      "attribute": null,
+      "description": "Extracted member ID"
+    }
+  ],
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target": {
+        "primary_selector": "body",
+        "fallback_selectors": [],
+        "text_fallback": null,
+        "aria_fallback": null
+      },
+      "value_expression": "http://localhost:3001",
+      "parameter_ref": null,
+      "checkpoints": [],
+      "description": "Navigate to APEX Federal homepage"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target": {
+        "primary_selector": "#member-id-input",
+        "fallback_selectors": [
+          "input[name=\"member_id\"]",
+          "[aria-label=\"Member ID\"]"
+        ],
+        "text_fallback": null,
+        "aria_fallback": "Member ID"
+      },
+      "value_expression": "${inputs.member_id}",
+      "parameter_ref": "member_id",
+      "checkpoints": [],
+      "description": "Enter member ID into search input box"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target": {
+        "primary_selector": "#search-btn",
+        "fallback_selectors": [
+          "button[name=\"search\"]",
+          "button[type=\"submit\"]"
+        ],
+        "text_fallback": "Search",
+        "aria_fallback": "Search"
+      },
+      "value_expression": null,
+      "parameter_ref": null,
+      "checkpoints": [
+        {
+          "rule_type": "url_contains",
+          "target": "/member/",
+          "description": "Verify page navigated to member details view"
+        }
+      ],
+      "description": "Click Search button"
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target": {
+        "primary_selector": "#savings-balance-val",
+        "fallback_selectors": [
+          ".acc-balance",
+          ".savings-balance-amount"
+        ],
+        "text_fallback": null,
+        "aria_fallback": null
+      },
+      "value_expression": null,
+      "parameter_ref": "savings_balance",
+      "checkpoints": [],
+      "description": "Extract member savings account balance"
+    }
+  ],
+  "success_condition": {
+    "rule_type": "element_visible",
+    "target": "#savings-balance-val",
+    "description": "Savings balance element is visible on page"
+  },
+  "safety_metadata": {
+    "risk_level": "SAFE",
+    "allowed_routes": [
+      "/",
+      "/member/*"
+    ]
+  },
+  "creation_metadata": {
+    "compiled_at": "2026-09-27T10:00:00Z",
+    "goal": "Find member [REDACTED] and retrieve their savings balance."
+  }
+}

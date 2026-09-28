@@ -1,0 +1,51 @@
+{
+  "run_id": "wf_bac071bc",
+  "capability_id": "member_savings_lookup",
+  "status": "SUCCESS",
+  "inputs": {
+    "member_id": "[REDACTED]"
+  },
+  "outputs": {
+    "savings_balance": "$2,450.00",
+    "member_name": "Jane Miller",
+    "member_id": "1003"
+  },
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target_selector": "body",
+      "status": "SUCCESS",
+      "duration_ms": 622,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_bac071bc\\step_1.png"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target_selector": "#member-id-input",
+      "status": "SUCCESS",
+      "duration_ms": 126,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_bac071bc\\step_2.png"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target_selector": "#search-btn",
+      "status": "SUCCESS",
+      "duration_ms": 647,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_bac071bc\\step_3.png"
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target_selector": "#savings-balance-val",
+      "status": "SUCCESS",
+      "duration_ms": 103,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_bac071bc\\step_4.png"
+    }
+  ]
+}

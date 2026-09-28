@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - TARGET_APP_URL=http://target-app:3001
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/orchestration
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+      - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-small-latest}
+    depends_on:
+      - db
+      - target-app
+
+  target-app:
+    build:
+      context: ./target-app
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=orchestration
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

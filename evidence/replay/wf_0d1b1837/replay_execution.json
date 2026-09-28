@@ -1,0 +1,51 @@
+{
+  "run_id": "wf_0d1b1837",
+  "capability_id": "member_savings_lookup",
+  "status": "SUCCESS",
+  "inputs": {
+    "member_id": "[REDACTED]"
+  },
+  "outputs": {
+    "savings_balance": "$7,250.00",
+    "member_name": "John Doe",
+    "member_id": "1002"
+  },
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target_selector": "body",
+      "status": "SUCCESS",
+      "duration_ms": 648,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_0d1b1837\\step_1.png"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target_selector": "#member-id-input",
+      "status": "SUCCESS",
+      "duration_ms": 116,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_0d1b1837\\step_2.png"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target_selector": "#search-btn",
+      "status": "SUCCESS",
+      "duration_ms": 680,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_0d1b1837\\step_3.png"
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target_selector": "#savings-balance-val",
+      "status": "SUCCESS",
+      "duration_ms": 113,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\wf_0d1b1837\\step_4.png"
+    }
+  ]
+}

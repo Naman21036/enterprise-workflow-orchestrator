@@ -1,0 +1,52 @@
+{
+  "run_id": "test_no_llm_d5476b",
+  "capability_id": "member_savings_lookup",
+  "status": "SUCCESS",
+  "inputs": {
+    "member_id": "[REDACTED]"
+  },
+  "output_fields": [
+    "savings_balance",
+    "member_name",
+    "member_id"
+  ],
+  "outputs_redacted": true,
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target_selector": "body",
+      "status": "SUCCESS",
+      "duration_ms": 802,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\test_no_llm_d5476b\\step_1.png"
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target_selector": "#member-id-input",
+      "status": "SUCCESS",
+      "duration_ms": 177,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\test_no_llm_d5476b\\step_2.png"
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target_selector": "#search-btn",
+      "status": "SUCCESS",
+      "duration_ms": 716,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\test_no_llm_d5476b\\step_3.png"
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target_selector": "#savings-balance-val",
+      "status": "SUCCESS",
+      "duration_ms": 95,
+      "error": null,
+      "screenshot_path": "./evidence\\replay\\test_no_llm_d5476b\\step_4.png"
+    }
+  ]
+}
