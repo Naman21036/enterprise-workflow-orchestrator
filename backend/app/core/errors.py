@@ -14,6 +14,16 @@ class CapabilityNotFoundError(OrchestrationException):
             details={"capability_id": capability_id}
         )
 
+
+class ArtifactValidationError(OrchestrationException):
+    def __init__(self, capability_id: str, version: str | None = None):
+        label = f"{capability_id} v{version}" if version else capability_id
+        super().__init__(
+            message=f"Stored capability artifact '{label}' failed integrity validation.",
+            code="ARTIFACT_VALIDATION_FAILED",
+            details={"capability_id": capability_id, "version": version},
+        )
+
 class SafetyViolationError(OrchestrationException):
     def __init__(self, reason: str, action: str = None):
         super().__init__(

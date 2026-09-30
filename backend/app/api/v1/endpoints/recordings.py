@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.db.database import get_db
 from backend.app.db.models import DiscoveryRecordingModel, RunModel
+from backend.app.security.auth import Principal, authorize, get_current_principal
 
 router = APIRouter()
 
@@ -42,9 +43,11 @@ def serialize(recording: DiscoveryRecordingModel) -> dict:
 
 
 @router.get("/recordings")
-async def list_recordings(limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def list_recordings(limit: int = 50, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
+    authorize(principal, "recordings:read")
     result = await db.execute(
-        select(DiscoveryRecordingModel)
+        select(DiscoveryRecordingModel).join(RunModel, RunModel.id == DiscoveryRecordingModel.run_id)
+        .where(RunModel.tenant_id == principal.tenant_id)
         .order_by(DiscoveryRecordingModel.started_at.desc())
         .limit(max(1, min(limit, 100)))
     )
@@ -52,10 +55,12 @@ async def list_recordings(limit: int = 50, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/recordings/{recording_id}")
-async def get_recording(recording_id: str, db: AsyncSession = Depends(get_db)):
+async def get_recording(recording_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
+    authorize(principal, "recordings:read")
     result = await db.execute(
-        select(DiscoveryRecordingModel)
+        select(DiscoveryRecordingModel).join(RunModel, RunModel.id == DiscoveryRecordingModel.run_id)
         .where(DiscoveryRecordingModel.id == recording_id)
+        .where(RunModel.tenant_id == principal.tenant_id)
         .options(selectinload(DiscoveryRecordingModel.events))
     )
     recording = result.scalar_one_or_none()
@@ -77,7 +82,7 @@ async def get_recording(recording_id: str, db: AsyncSession = Depends(get_db)):
         for event in recording.events
     ]
     replay_ids = recording.linked_replay_runs_json or []
-    linked = await db.execute(select(RunModel).where(RunModel.id.in_(replay_ids))) if replay_ids else None
+    linked = await db.execute(select(RunModel).where(RunModel.id.in_(replay_ids), RunModel.tenant_id == principal.tenant_id)) if replay_ids else None
     runs_by_id = {run.id: run for run in linked.scalars().all()} if linked else {}
     payload["linked_replay_runs"] = [
         {

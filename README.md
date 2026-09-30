@@ -5,7 +5,7 @@ Discover a browser workflow once, validate it, then replay its saved action sequ
 
 APEX Automation is a local engineering demonstration for computer-use automation against a **synthetic APEX Federal banking application**. It explores how UI-driven work can be made reusable and inspectable when a legacy application has no suitable API. It is not connected to a real credit union and must not be used to operate real accounts.
 
-[Architecture](docs/architecture.md) · [Local setup](docs/development.md) · [API reference](docs/api-reference.md) · [Testing](docs/testing.md) · [Troubleshooting](docs/troubleshooting.md)
+[Architecture](docs/architecture.md) · [Local setup](docs/development.md) · [API reference](docs/api-reference.md) · [Authentication and recovery](docs/authentication-and-recovery.md) · [Testing](docs/testing.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ## At a glance
 
@@ -45,8 +45,9 @@ All components above exist in the repository. The checked-in Docker Compose file
 | Artifact compilation | Read-only trace steps are normalized, typed and versioned. Publication requires a successful clean-context replay. | Dynamic parameter extraction currently specializes in `member_id`; this is not a general workflow learner. |
 | Replay | Saved artifacts validate inputs, resolve selectors, execute prescribed actions, check checkpoints and extract outputs without LLM decision calls. | Playwright web surface only; UI changes can break selectors. |
 | Outcomes | Replay distinguishes `SUCCESS`, `BUSINESS_OUTCOME`, `BLOCKED` and `FAILED`; details include an outcome category and error code where available. | Some low-level replay action failures remain generic strings. |
-| Human intervention | A blocked run can preserve a live browser context for operator actions and a verification-based resume. | The session is in process memory and is lost on backend restart. Resume verifies the page; it does not resume an arbitrary remaining action plan. |
-| Console | React views cover runs, capabilities, recordings, handoffs, evidence and settings. Active views poll the API. | No frontend test suite or authentication layer is present. |
+| Human intervention and recovery | Durable action checkpoints support operator handoff, guarded live-session resume, and deterministic reconstruction after a backend restart when pending actions are safe to retry. | Reconstructed browsers do not restore cookies or prior page memory. Interrupted discovery has no published artifact to reconstruct. |
+| Authentication and tenancy | HS256 JWT authentication, PBKDF2 password hashes, Admin/Operator/Viewer roles, tenant-scoped records and evidence, tenant/operator administration, and audit events. | Login throttling is process-local; audit rows are not tamper-proof against a database administrator. |
+| Console | React views cover runs, capabilities, recordings, handoffs, evidence and settings, with sign-in and recovery controls. Active views poll the API. | No frontend test runner or browser E2E suite is configured. |
 
 ## Screenshots
 
@@ -91,15 +92,16 @@ backend/app/
   api/v1/endpoints/  FastAPI routes for workflows, runs, handoffs, safety, health, artifacts and recordings
   artifacts/         Pydantic artifact schema, compiler and DB/JSON storage
   core/              Settings, logging and error/outcome taxonomy
-  db/                SQLAlchemy orchestration and synthetic banking models
+  db/                SQLAlchemy orchestration, tenant/security models and migration support
   discovery/         Mistral action loop, action schema and prompts
-  escalation/        In-memory Playwright sessions and operator actions
+  escalation/        Live Playwright handoff sessions and operator actions
   llm/               LLM interface, factory and Mistral HTTP client
-  orchestration/     Workflow routing, recording persistence and publication lifecycle
+  orchestration/     Workflow routing, recording lifecycle and durable checkpoints
+  security/          JWT auth, role/tenant authorization and audit events
   replay/             LLM-free artifact execution and checkpoint evaluation
   safety/             URL/action policy and value redaction
   surfaces/           Computer-surface interface and Playwright adapter
-backend/migrations/   One additive SQL migration; not an automatically applied migration system
+backend/migrations/   Versioned additive migrations applied by the API startup runner
 backend/tests/        pytest unit and browser-backed integration tests
 target-app/app.py     Local synthetic banking website, JSON member API and dialog simulator
 frontend/src/         React console and its API client
@@ -128,6 +130,10 @@ Copy-Item .env.example .env
 ```
 
 For new discovery, replace the placeholder `MISTRAL_API_KEY` in `.env` with your key. Do not commit `.env`. The default SQLite database is `orchestration.db` in the current working directory. Start the app with the **same working directory and environment** for the target and backend.
+
+Authentication is enabled by default. Before the backend's first startup, generate a signing key with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and a password hash with `python scripts/create_password_hash.py` (it prompts without echoing the password). Set the key, `APEX_BOOTSTRAP_ADMIN_USERNAME`, optional admin full name/email, and password hash in ignored `.env`. API startup applies pending migrations and creates the first admin in the `default` tenant; it will not replace an existing operator or reset an existing password. The console uses an HttpOnly cookie; API clients can use a bearer JWT.
+
+Users can self-register at `http://127.0.0.1:3000/?register=1` with their full name, username, email, and password. The server assigns every new account the `OPERATOR` role in the active `default` tenant; registration does not accept a tenant, role, or invitation code from the client. Registration is rate limited and requires authentication to be configured. See [Authentication and recovery](docs/authentication-and-recovery.md) for the full API and setup instructions. `APEX_AUTH_ENABLED=false` is only a local development bypass.
 
 Seed the synthetic bank rows once in a fresh database:
 
@@ -183,6 +189,19 @@ Detailed steps and configuration are in [Development](docs/development.md) and [
 
 ## Run a workflow
 
+For PowerShell API examples, sign in once and send the bearer token on protected requests. The console manages its session cookie automatically.
+
+```powershell
+$username = Read-Host "APEX operator username"
+$password = Read-Host "APEX operator password" -AsSecureString
+$plainPassword = [System.Net.NetworkCredential]::new("", $password).Password
+$login = Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/auth/login `
+  -Method Post -ContentType "application/json" `
+  -Body (@{ username = $username; password = $plainPassword } | ConvertTo-Json)
+$headers = @{ Authorization = "Bearer $($login.access_token)" }
+Remove-Variable plainPassword, password
+```
+
 ### Reuse a capability (no LLM decision calls)
 
 The router selects the savings capability for this goal. `force_mode` makes the path explicit:
@@ -196,7 +215,7 @@ $body = @{
 } | ConvertTo-Json -Depth 5
 
 Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/workflows/run `
-  -Method Post -ContentType "application/json" -Body $body
+  -Method Post -ContentType "application/json" -Headers $headers -Body $body
 ```
 
 The synthetic fixture for member `1002` is John Doe with a current savings snapshot of `$7,250.00`. Member `1013` exercises the multiple-active-savings outcome; `99999` exercises member-not-found. These workflows use local synthetic data only.
@@ -217,7 +236,7 @@ $body = @{
 
 Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/workflows/run `
   -Method Post -ContentType "application/json" `
-  -Headers @{ "Idempotency-Key" = "demo-discovery-2026-09-29" } -Body $body
+  -Headers ($headers + @{ "Idempotency-Key" = "demo-discovery-2026-09-30" }) -Body $body
 ```
 
 The key is optional, 8–255 visible ASCII characters. It is hashed before persistence. Reusing it for the same request returns the associated run; different request content returns HTTP 409. A Mistral key being configured does not guarantee provider availability; rate limits and provider failures are recorded.
@@ -233,19 +252,21 @@ Pop-Location
 
 The backend has unit tests plus a browser-backed LLM-free replay integration test. On Windows the integration test may need a process policy that allows Playwright's driver child process to create its IPC pipe. See [Testing](docs/testing.md) for the verified result, test coverage and gaps. The frontend build type-checks with `tsc`; no frontend test command is configured.
 
+Latest local verification (2026-09-30): backend suite **44 passed**; frontend production build **passed** (TypeScript and Vite, 1,478 modules). The authentication tests exercise the API flow with an in-process test client; no React browser E2E suite is configured.
+
 ## API and operations
 
-Routes cover health, workflow submission and explicit replay, run history/details, capabilities, recordings/events, safety policy and handoff. Start at [the API reference](docs/api-reference.md) or the generated [OpenAPI document](http://127.0.0.1:8000/openapi.json). The console polls active run/recording data; it does not use SSE or WebSockets.
+Routes cover sign-in, tenant/operator administration, health, workflow submission and explicit replay, run history/details, capabilities, recordings/events, safety policy and handoff/recovery. Protected API requests require the console session cookie or `Authorization: Bearer <JWT>`. Run, recording, handoff and evidence access is tenant-scoped; published capability definitions are shared read-only. Start at [the API reference](docs/api-reference.md) or the generated [OpenAPI document](http://127.0.0.1:8000/openapi.json). The console polls active run/recording data; it does not use SSE or WebSockets.
 
 ## Safety, data and known limits
 
 - All included financial data is synthetic. Current balances are snapshots; generated transaction activity is not a reconciled ledger.
-- The service has no API authentication or tenant isolation. CORS is not an authorization control. The `/evidence` directory is statically served without user-level access checks.
-- The URL/action safety policy is a local development guardrail based partly on host, route and selector/value keyword checks. It is not a production security boundary and is not a general-purpose browser sandbox.
+- Authentication and tenant scoping are implemented for the API and evidence routes. CORS remains a browser-origin control, not authorization. Login throttling is in-memory per API process, and audit events are append-only by application convention rather than database-tamper-proof.
+- The URL/action safety policy is a fail-closed application-specific allowlist for the synthetic simulator. It permits only configured hosts, limited ports, root/member routes, and explicitly supported simulator actions; the exact active confirmation action requires operator approval bound to the run and action. It is not a general-purpose browser sandbox or a production security boundary.
 - Browser support is currently Chromium through Playwright; native desktop control is not implemented.
-- Handoff state is held in process memory. A backend restart closes the continuity guarantee and marks persisted waiting sessions as lost.
+- Durable checkpoints and handoff records survive restarts. A live browser session does not: safe deterministic actions may be reconstructed from the configured target root after validating artifact fingerprint, inputs and retry classifications. Cookies and page memory are not restored. Discovery runs without a published artifact cannot be reconstructed for resume.
 - Only savings lookup and profile lookup are current reusable capabilities. Transaction, card, loan and statement data exist in the simulator, but corresponding automation capabilities are not delivered.
-- Database initialization uses SQLAlchemy `create_all`; there is no migration runner. The single SQL migration is not automatically executed. PostgreSQL/Docker Compose is not currently reproducible from this checkout.
+- API startup runs the versioned additive SQLite migration runner before serving requests. Back up the database before upgrades; downgrade is not provided. PostgreSQL/Docker Compose is not currently reproducible from this checkout.
 - No license file exists. No reuse license is asserted here.
 
 Read [Safety and security](docs/safety-and-security.md), [Human intervention](docs/human-intervention.md), [Troubleshooting](docs/troubleshooting.md) and [Known implementation status](docs/implementation-inventory.md) before extending the system.

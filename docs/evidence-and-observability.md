@@ -36,12 +36,18 @@ The console uses HTTP polling:
 
 Selected run detail polling stops at a terminal status. The Recording Explorer also stops selected recording-detail polling at terminal status, but the Evidence Explorer currently continues polling its selected recording detail every 2.5 seconds while the view is mounted. List polling continues while each view is mounted. There is no SSE, WebSocket or server push.
 
-## Logs and metrics
+## Logs, traces and metrics
 
-`structlog` is configured for JSON-style console logs at INFO. Logs include safe metadata such as run ID, action type, model, duration, usage counters and error code; source code avoids logging the Mistral key and raw provider body. Some browser adapter errors include selector or exception text, so log access should still be treated as operational data. There is no metrics exporter, tracing backend, retention policy or centralized redaction audit in this repository.
+`structlog` is configured for JSON-style console logs at INFO. Logs include run/action metadata and classified errors; source code avoids logging the Mistral key and raw provider body. Browser errors can include selectors and exception text, so logs remain operational data.
+
+Optional LangSmith wrappers trace discovery and individual Mistral decisions. Their input/output filters retain bounded identifiers, model name, goal length, action type and presence flags; they do not export prompts, model response values, credentials or page text. When LangSmith and OpenTelemetry are both enabled, records share workflow `run_id`, capability ID, execution mode and current OTel trace ID as metadata. They remain separate tracing systems; this correlation does not claim one distributed trace across both vendors.
+
+OpenTelemetry is opt-in with `APEX_OTEL_ENABLED=true`. It instruments FastAPI and SQLAlchemy, plus explicit spans for workflow routing, discovery, Mistral decisions, capability matching/compilation/storage, replay, safety and handoff/resume. W3C Trace Context and Baggage propagators are installed. Counters/histograms cover workflow count/duration, safety rejections and escalations. By default, spans and metrics use console exporters; setting `OTEL_EXPORTER_OTLP_ENDPOINT` selects OTLP/HTTP exporters. Export/setup failures are isolated from workflow outcomes.
+
+This instrumentation does not configure a metrics backend, retention policy, centralized redaction audit or dashboard. It is best-effort observability, not durable workflow evidence. See [configuration](configuration.md#optional-observability).
 
 ## Privacy and availability
 
-The sanitizers cover common pattern-based values, but do not guarantee all private data is removed. Screenshots can contain raw page contents and DOM observations are sent to Mistral during discovery. The `/evidence` static mount has no authentication or per-run authorization. Use synthetic values, local binding and controlled disk permissions. Evidence retention and cleanup are manual; no pruning policy is implemented.
+The sanitizers cover common pattern-based values, but do not guarantee all private data is removed. Screenshots can contain raw page contents and DOM observations are sent to Mistral during discovery. Evidence is served through an authenticated route that checks path containment and owning run tenant; the evidence directory is not mounted as an unauthenticated static file tree. Use synthetic values, local binding and controlled disk permissions. Evidence retention and cleanup are manual; no pruning policy is implemented.
 
-See [Discovery and recording](discovery-and-recording.md), [API reference](api-reference.md), and [Safety and security](safety-and-security.md).
+See [Discovery and recording](discovery-and-recording.md), [API reference](api-reference.md), [Configuration](configuration.md#optional-observability), and [Safety and security](safety-and-security.md).

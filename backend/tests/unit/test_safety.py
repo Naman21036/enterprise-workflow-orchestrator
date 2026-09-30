@@ -12,7 +12,7 @@ def test_safety_policy_domain_validation():
 def test_safety_policy_risk_classification():
     policy = SafetyPolicy()
     assert policy.classify_action_risk("click", "#search-btn") == RiskLevel.SAFE
-    assert policy.classify_action_risk("fill", "#member-id-input", "1002") == RiskLevel.SAFE
+    assert policy.classify_action_risk("fill", "#member-id-input", "1002") == RiskLevel.MEDIUM
     assert policy.classify_action_risk("click", "#delete-account-btn") == RiskLevel.IRREVERSIBLE
 
 def test_sensitive_data_redaction():

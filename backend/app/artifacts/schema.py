@@ -5,13 +5,13 @@ class TargetStrategy(BaseModel):
     model_config = {"extra": "forbid"}
     primary_selector: str = Field(..., min_length=1, max_length=300, description="Primary CSS selector or ID")
     fallback_selectors: List[str] = Field(default_factory=list, max_length=10, description="Ordered list of fallback locators")
-    text_fallback: Optional[str] = Field(None, description="Visible text fallback locator")
-    aria_fallback: Optional[str] = Field(None, description="Accessible label or role fallback")
+    text_fallback: Optional[str] = Field(None, max_length=300, description="Visible text fallback locator")
+    aria_fallback: Optional[str] = Field(None, max_length=300, description="Accessible label or role fallback")
 
 class CheckpointRule(BaseModel):
     model_config = {"extra": "forbid"}
     rule_type: Literal["element_visible", "url_contains", "text_present", "title_contains"]
-    target: str = Field(..., description="Selector, URL fragment, or text string to verify")
+    target: str = Field(..., min_length=1, max_length=500, description="Selector, URL fragment, or text string to verify")
     description: Optional[str] = None
 
 class ParameterDef(BaseModel):
@@ -35,7 +35,7 @@ class ReplayStep(BaseModel):
     step_number: int = Field(..., ge=1)
     action_type: Literal["navigate", "click", "fill", "select", "extract", "assert"]
     target: TargetStrategy
-    value_expression: Optional[str] = Field(None, description="Template expression e.g. ${inputs.member_id}")
+    value_expression: Optional[str] = Field(None, max_length=1000, description="Template expression e.g. ${inputs.member_id}")
     parameter_ref: Optional[str] = Field(None, description="Referenced input parameter name")
     checkpoints: List[CheckpointRule] = Field(default_factory=list)
     description: Optional[str] = None
@@ -59,6 +59,10 @@ class CapabilityArtifact(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact_references(self):
+        if self.schema_version != "1.0.0":
+            raise ValueError(f"Unsupported artifact schema_version: {self.schema_version}")
+        if self.surface_type != "web":
+            raise ValueError(f"Unsupported artifact surface_type: {self.surface_type}")
         parameter_names = [parameter.name for parameter in self.parameters]
         output_names = [output.name for output in self.outputs]
         if len(parameter_names) != len(set(parameter_names)):
@@ -67,6 +71,8 @@ class CapabilityArtifact(BaseModel):
             raise ValueError("Capability output names must be unique")
         output_names_set = set(output_names)
         for step in self.steps:
+            if step.action_type in {"fill", "select"} and not step.parameter_ref and step.value_expression is None:
+                raise ValueError(f"Step {step.step_number} requires a value or input parameter")
             if not step.parameter_ref:
                 continue
             allowed_names = output_names_set if step.action_type == "extract" else set(parameter_names)

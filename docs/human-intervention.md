@@ -6,22 +6,22 @@ Both discovery and replay inspect observed `page_text_summary` for the simulator
 
 ## Operator workflow
 
-1. The console's Human intervention view lists runs whose run status is `BLOCKED` or `AWAITING_HUMAN`, or opens a selected run ID.
-2. `GET /api/v1/runs/{run_id}/handoff` returns the persisted handoff plus whether the process still has a live surface.
-3. `POST /api/v1/runs/{run_id}/handoff/action` accepts `click`, `type`, `press_key`, and `take_screenshot`. Request fields are bounded. The console currently exposes click-selector, Enter, and screenshot buttons; it does not expose the API's type action.
-4. `POST /api/v1/runs/{run_id}/resume` checks the **same current browser page** for `#member-name-val`. If found, it returns member name and available balance/ID. If member-not-found text is observed, it returns a business outcome. Otherwise the request returns 409 and keeps the session active.
-5. On a verified final result, run and handoff rows are updated and session resources close.
+1. The console lists tenant-owned runs in `BLOCKED` state and loads the durable handoff session and checkpoint metadata.
+2. `GET /api/v1/runs/{run_id}/handoff` returns the handoff state, checkpoint/session versions, required input names, expiry, and whether this process still has the live browser.
+3. `POST /api/v1/runs/{run_id}/handoff/action` accepts bounded click, type, key, and screenshot requests with an action ID. A database compare-and-swap moves the session to `ACTION_IN_PROGRESS` before browser input; repeated action IDs return the recorded result and competing worker requests cannot claim the same session action. The exact active simulator confirmation receives a typed, action-bound approval decision; other unknown actions fail closed.
+4. `POST /api/v1/runs/{run_id}/resume` compares the supplied session version, claims the session with a database version check, verifies the artifact fingerprint, and continues the deterministic plan after the resolved action. The API revalidates the route and checks the artifact's success condition before reporting a terminal result.
+5. Completed outcomes update run, checkpoint, and session state and close the browser surface. If another unexpected confirmation appears, the run returns to `BLOCKED` with the new current step.
 
-Resume is a terminal-state verification step. It does not rewind, rerun the discovery loop or continue an arbitrary persisted action list.
+## Session lifetime and restart recovery
 
-## Session lifetime and abandonment
+Browser pages remain in a process-local dictionary. Handoff metadata and execution checkpoints are durable in the database. At startup, an unexpired waiting or interrupted session becomes `RECOVERY_REQUIRED`; an expired session becomes `EXPIRED`. This distinction does not imply that browser cookies/page memory can be restored.
 
-Browser pages are held in an in-memory dictionary keyed by run ID. There is no distributed session store or lease/expiration worker. Explicit close occurs after successful resume; normal process shutdown/runtime cleanup closes process-owned resources. At the next backend startup, persisted `AWAITING_HUMAN` records are marked `SESSION_LOST`, with corresponding blocked runs failed as `SESSION_LOST`.
-
-An operator action request after session loss fails because no live browser session exists. The UI disables actions/resume when the API reports `session_active=false`. Existing screenshots and DB handoff history may remain, but they do not restore the context.
+For `RECOVERY_REQUIRED`, the operator re-enters required input values, which are never stored in checkpoint rows. The API checks the saved artifact fingerprint and verifies every action in the plan is marked `SAFE_TO_RETRY_AFTER_STATE_RECONSTRUCTION`, then deterministically replays the plan from the configured target root. Unsafe/in-progress high-risk plans are denied automatic recovery. This path makes no LLM calls. Session expiry is checked at each action and resume request.
 
 ## Auditing and security limits
 
-Successful operator actions are appended to in-memory handoff state and the handoff record JSON. Common sensitive `text`/member/account fields are redacted in persisted action parameters. Errors can still carry diagnostic strings, and the API has no authentication or operator-role enforcement. Treat run IDs and the local endpoint as sensitive, keep the service private, and use only synthetic data.
+Authentication/login results, tenant/operator management, safety decisions, action start/finish, restart recovery, and resume outcomes are recorded in `audit_events`, with a correlation ID and redacted payload. Checkpoint rows retain stable action IDs and sanitized state metadata, not raw page text, screenshots, tokens, or input values. OpenTelemetry can export resume outcome/duration, auth event, escalation and safety rejection metrics.
+
+The per-run process lock is complemented by database session-version compare-and-swap for multi-worker action/resume claims. The live browser itself is not shared between workers; a request handled by a worker without that process-local surface returns a recovery-required conflict. Login throttling is process-local and should be moved to a shared edge limiter for a multi-worker public deployment.
 
 See [the sequence diagram in Architecture](architecture.md#operator-handoff-and-resume) and [Safety](safety-and-security.md).

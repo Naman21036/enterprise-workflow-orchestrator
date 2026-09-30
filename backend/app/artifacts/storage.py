@@ -9,12 +9,27 @@ from backend.app.db.models import CapabilityModel, CapabilityVersionModel
 from backend.app.artifacts.schema import CapabilityArtifact
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
+from backend.app.observability import span, set_attributes
+from backend.app.core.errors import ArtifactValidationError
 
 class ArtifactStorage:
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
 
+    @staticmethod
+    def _version_key(value: str) -> tuple[int, int, int]:
+        match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value or "")
+        if not match:
+            raise ValueError("Invalid semantic artifact version")
+        return tuple(map(int, match.groups()))
+
     async def save_artifact(self, artifact: CapabilityArtifact, commit: bool = True) -> CapabilityArtifact:
+        with span("apex.artifact.persist", {"capability.id": artifact.capability_id, "artifact.version": artifact.version}) as current:
+            saved = await self._save_artifact(artifact, commit)
+            set_attributes(current, {"artifact.persisted": True})
+            return saved
+
+    async def _save_artifact(self, artifact: CapabilityArtifact, commit: bool = True) -> CapabilityArtifact:
         artifact = CapabilityArtifact.validate_for_publication(artifact.model_dump())
         existing_stmt = select(CapabilityVersionModel).where(
             CapabilityVersionModel.capability_id == artifact.capability_id,
@@ -104,25 +119,56 @@ class ArtifactStorage:
         return f"{major}.{minor}.{patch + 1}"
 
     async def get_artifact(self, capability_id: str, version: Optional[str] = None) -> Optional[CapabilityArtifact]:
+        with span("apex.artifact.retrieve", {"capability.id": capability_id, "artifact.version": version or "latest"}) as current:
+            artifact = await self._get_artifact(capability_id, version)
+            set_attributes(current, {"artifact.found": artifact is not None, "artifact.version": artifact.version if artifact else version})
+            return artifact
+
+    async def _get_artifact(self, capability_id: str, version: Optional[str] = None) -> Optional[CapabilityArtifact]:
         stmt = select(CapabilityVersionModel).where(CapabilityVersionModel.capability_id == capability_id)
         if version:
             stmt = stmt.where(CapabilityVersionModel.version == version)
-        else:
-            stmt = stmt.order_by(CapabilityVersionModel.created_at.desc()).limit(1)
-
         res = await self.db.execute(stmt)
-        ver_model = res.scalar_one_or_none()
+        candidates = list(res.scalars().all())
+        if version:
+            ver_model = next((item for item in candidates if item.version == version), None)
+        else:
+            try:
+                ver_model = max(candidates, key=lambda item: self._version_key(item.version)) if candidates else None
+            except ValueError as exc:
+                raise ArtifactValidationError(capability_id) from exc
         if not ver_model:
             # Fallback to local disk file if DB table empty
-            filename = f"{capability_id}_v{version or '1.0.0'}.json"
-            filepath = os.path.join(settings.EVIDENCE_DIR, "artifacts", filename)
+            artifact_dir = os.path.join(settings.EVIDENCE_DIR, "artifacts")
+            if version:
+                candidates = [f"{capability_id}_v{version}.json"]
+            else:
+                prefix = f"{capability_id}_v"
+                candidates = [name for name in os.listdir(artifact_dir) if name.startswith(prefix) and name.endswith(".json")] if os.path.isdir(artifact_dir) else []
+                try:
+                    candidates.sort(key=lambda name: self._version_key(name[len(prefix):-5]), reverse=True)
+                except ValueError as exc:
+                    raise ArtifactValidationError(capability_id) from exc
+            filepath = os.path.join(artifact_dir, candidates[0]) if candidates else ""
             if os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return CapabilityArtifact.model_validate(data)
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    artifact = CapabilityArtifact.validate_for_publication(data)
+                    if artifact.capability_id != capability_id or (version and artifact.version != version):
+                        raise ValueError("Artifact identity does not match its storage key")
+                    return artifact
+                except Exception as exc:
+                    raise ArtifactValidationError(capability_id, version) from exc
             return None
 
-        return CapabilityArtifact.model_validate(ver_model.artifact_json)
+        try:
+            artifact = CapabilityArtifact.validate_for_publication(ver_model.artifact_json)
+            if artifact.capability_id != capability_id or artifact.version != ver_model.version:
+                raise ValueError("Artifact identity does not match its database version row")
+            return artifact
+        except Exception as exc:
+            raise ArtifactValidationError(capability_id, ver_model.version) from exc
 
     async def list_capabilities(self) -> List[dict]:
         stmt = select(CapabilityModel)
@@ -130,9 +176,13 @@ class ArtifactStorage:
         caps = res.scalars().all()
         result = []
         for c in caps:
-            stmt_v = select(CapabilityVersionModel).where(CapabilityVersionModel.capability_id == c.capability_id).order_by(CapabilityVersionModel.created_at.desc()).limit(1)
+            stmt_v = select(CapabilityVersionModel).where(CapabilityVersionModel.capability_id == c.capability_id)
             res_v = await self.db.execute(stmt_v)
-            latest = res_v.scalar_one_or_none()
+            versions = list(res_v.scalars().all())
+            try:
+                latest = max(versions, key=lambda item: self._version_key(item.version)) if versions else None
+            except ValueError as exc:
+                raise ArtifactValidationError(c.capability_id) from exc
             result.append({
                 "capability_id": c.capability_id,
                 "name": c.name,
@@ -146,24 +196,30 @@ class ArtifactStorage:
         known = {item["capability_id"] for item in result}
         artifacts_dir = os.path.join(settings.EVIDENCE_DIR, "artifacts")
         if os.path.isdir(artifacts_dir):
+            mirrors: dict[str, list[tuple[tuple[int, int, int], str, str]]] = {}
             for filename in os.listdir(artifacts_dir):
-                if not filename.endswith(".json"):
+                match = re.fullmatch(r"([A-Za-z0-9_-]{1,80})_v(\d+\.\d+\.\d+)\.json", filename)
+                if match:
+                    cap_id, version = match.groups()
+                    mirrors.setdefault(cap_id, []).append((self._version_key(version), version, filename))
+            for cap_id, candidates in mirrors.items():
+                if cap_id in known:
                     continue
+                _, version, filename = max(candidates)
                 try:
                     with open(os.path.join(artifacts_dir, filename), "r", encoding="utf-8") as stream:
-                        artifact = CapabilityArtifact.model_validate(json.load(stream))
-                    if artifact.capability_id in known:
-                        continue
-                    known.add(artifact.capability_id)
-                    result.append({
-                        "capability_id": artifact.capability_id,
-                        "name": artifact.name,
-                        "description": artifact.description,
-                        "target_app": artifact.target_application,
-                        "is_active": True,
-                        "latest_version": artifact.version,
-                        "created_at": artifact.creation_metadata.get("compiled_at"),
-                    })
-                except (OSError, ValueError, json.JSONDecodeError):
-                    logger.warning("Ignoring invalid capability artifact on disk", filename=filename)
+                        artifact = CapabilityArtifact.validate_for_publication(json.load(stream))
+                    if artifact.capability_id != cap_id or artifact.version != version:
+                        raise ValueError("Artifact contents do not match the mirror filename")
+                except Exception as exc:
+                    raise ArtifactValidationError(cap_id, version) from exc
+                result.append({
+                    "capability_id": artifact.capability_id,
+                    "name": artifact.name,
+                    "description": artifact.description,
+                    "target_app": artifact.target_application,
+                    "is_active": True,
+                    "latest_version": artifact.version,
+                    "created_at": artifact.creation_metadata.get("compiled_at"),
+                })
         return result

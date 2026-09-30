@@ -12,6 +12,8 @@ from backend.app.discovery.prompts import SYSTEM_DISCOVERY_PROMPT, build_user_di
 from backend.app.llm.factory import LLMFactory
 from backend.app.safety.policy import default_safety_policy
 from backend.app.surfaces.playwright import PlaywrightWebSurface
+from backend.app.observability import langsmith_traceable, span
+
 
 ObservationCallback = Callable[[int, str, Dict[str, Any], Optional[str], Optional[str]], Awaitable[None]]
 StepCallback = Callable[[DiscoveryStepResult], Awaitable[None]]
@@ -52,6 +54,20 @@ class MistralDiscoveryAgent:
             logger.warning("Discovery screenshot capture failed", run_id=run_id, step=step, error_type=type(exc).__name__)
             return None, type(exc).__name__
 
+    @langsmith_traceable(
+        "apex.discovery",
+        input_filter=lambda values: {
+            "run_id": values.get("run_id"),
+            "goal_chars": len(values.get("goal", "")),
+            "step_limit": getattr(values.get("self"), "max_steps", None),
+        },
+        output_filter=lambda result: {
+            "success": bool(result[0]) if isinstance(result, tuple) and result else False,
+            "steps": len(result[1]) if isinstance(result, tuple) and len(result) > 1 else 0,
+            "action_types": [item.action.action_type for item in result[1] if hasattr(item, "action")][:20] if isinstance(result, tuple) and len(result) > 1 else [],
+            "result_fields": sorted(result[2].keys()) if isinstance(result, tuple) and len(result) > 2 and isinstance(result[2], dict) else [],
+        },
+    )
     async def run_discovery(
         self,
         goal: str,
@@ -115,11 +131,22 @@ class MistralDiscoveryAgent:
             request_started = time.perf_counter()
             try:
                 self.llm_decision_calls += 1
-                action_data = await llm_client.generate_structured(
-                    system_prompt=SYSTEM_DISCOVERY_PROMPT,
-                    user_prompt=build_user_discovery_prompt(goal, step_num, observation),
-                    response_schema=AgentAction,
-                )
+                user_prompt = build_user_discovery_prompt(goal, step_num, observation)
+                with span("apex.discovery.model_decision", {
+                    "workflow.run_id": run_id,
+                    "execution.step_index": step_num,
+                    "llm.provider": "mistral",
+                    "llm.model": settings.MISTRAL_MODEL,
+                }):
+                    traced_call = getattr(llm_client, "generate_traced_decision", None)
+                    if traced_call:
+                        action_data = await traced_call(SYSTEM_DISCOVERY_PROMPT, user_prompt, AgentAction, run_id)
+                    else:
+                        action_data = await llm_client.generate_structured(
+                            system_prompt=SYSTEM_DISCOVERY_PROMPT,
+                            user_prompt=user_prompt,
+                            response_schema=AgentAction,
+                        )
                 action = AgentAction.model_validate(action_data)
             except asyncio.CancelledError:
                 raise

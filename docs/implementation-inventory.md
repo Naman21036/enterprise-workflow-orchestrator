@@ -1,19 +1,20 @@
 # Implementation inventory
 
-This inventory records what was present in source and in the local app audit on 2026-09-29. It is not a roadmap promise. “Verified” means exercised by a test or local API/UI check in this environment, not suitable for production.
+This inventory records source and local verification through 2026-09-30. It is not a roadmap promise. “Verified” means exercised by a test or local API/UI check in this environment, not suitable for production.
 
 ## Implemented and verified
 
 - FastAPI workflow, run, capability, recording, handoff, health and safety routes.
-- SQLite-backed orchestration records and synthetic banking records through SQLAlchemy async; startup calls `Base.metadata.create_all`.
+- JWT/HttpOnly-cookie authentication, PBKDF2 password verification, Admin/Operator/Viewer roles, tenant filters, one-time bootstrap admin and self-service registration into the default tenant with a server-assigned Operator role.
+- SQLite-backed orchestration, identity and synthetic banking records through SQLAlchemy async; startup applies additive versions `0003_handoff_security` and `0004_auth_registration`.
 - Synthetic banking API and web UI; the default seeder creates 600 records for member IDs 1000–1599.
 - Savings lookup and profile lookup artifact records are listed by the running API at version `1.0.0`.
 - Deterministic replay's normal path contains no LLM client call; the integration test replaces the LLM factory with a client that fails if called.
 - Mistral structured HTTP requests, response/schema validation, retry bounds, discovery step/request/time limits, and provider error classification.
 - Incremental recording events and best-effort screenshots; an observed live rate-limited run persisted `OBSERVATION`, `MODEL_DECISION`, and `DISCOVERY_STEP_FAILED` with zero completed actions.
 - Hashed idempotency key behavior: same request returned the prior run; changed request returned HTTP 409 in local API verification.
-- React pages load the local API; active run/recording views use interval polling.
-- Backend test suite passed 20 tests and frontend production build succeeded on the audit date (see [Testing](testing.md)).
+- React pages include sign-in, invite registration, session restoration and handoff recovery; active run/recording views use interval polling.
+- Backend test suite passed 44 tests and frontend production build succeeded on 2026-09-30 (see [Testing](testing.md)).
 
 ## Implemented but lightly tested
 
@@ -28,11 +29,12 @@ This inventory records what was present in source and in the local app audit on 
 - **Parameterization:** compiler generalizes a matching 4–5 digit member ID in an executed fill/select. Other fill/select values are saved literally. It does not infer arbitrary reusable variables.
 - **Checkpoints:** schema supports several rules, while compiler/replay behavior is narrower; compiler-generated click checkpoints check a `/member/` URL fragment. Replay checks step rules and final success condition, but this is not a general semantic verifier.
 - **Action surface:** `select` is executed; artifact `assert` is accepted but does not perform an independent assertion beyond attached/final checks. `aria_fallback` is represented by schema but not consulted by replay locator resolution.
-- **Handoff resume:** it validates the live member page (or member-not-found text) and closes the session after success; it does not continue a general suspended action plan.
-- **Evidence:** persisted metadata may point to screenshots, but capture is best effort. Evidence files are exposed through an unauthenticated static mount.
+- **Handoff resume:** live resume continues after a verified operator-resolved checkpoint; restart recovery reconstructs only actions classified safe to retry after state reconstruction. Cookies/page memory are not restored and discovery has no published replay plan.
+- **Evidence:** persisted metadata may point to screenshots, but capture is best effort. Evidence access checks authenticated tenant ownership and path containment.
 - **Database portability:** model definitions are SQLAlchemy-based, but only SQLite is fully installed/documented. PostgreSQL is mentioned in Compose; `asyncpg` and both referenced Dockerfiles are absent.
-- **Migration:** one SQL file exists for idempotency, but there is no migration tool/runner; schema creation uses `create_all`.
-- **Risk policy:** host/path and selector/value keyword heuristics block some risky actions. They are not a browser sandbox or robust authorization policy.
+- **Migration:** additive versions `0003_handoff_security` and `0004_auth_registration` run at startup. There is no automatic downgrade; back up SQLite before upgrade.
+- **Risk policy:** exact simulator routes and action/selector allowlists fail closed. They are not a general browser sandbox or a production authorization boundary.
+- **Authentication:** login and registration throttling are in-process and need a shared limiter for multi-worker deployment. Audit records are not tamper-proof against database administrators.
 
 ## Broken or inconsistent developer paths
 
@@ -45,7 +47,7 @@ This inventory records what was present in source and in the local app audit on 
 
 ## Planned or not implemented
 
-- Native desktop automation, distributed workers, durable browser sessions, multitenancy, API authentication/authorization, production deployment, a database migration framework, frontend unit tests, and automated frontend E2E tests.
+- Native desktop automation, distributed workers, browser session restoration, tenant-specific capability registries, shared rate limiting, PostgreSQL deployment verification, production deployment, frontend unit tests, and automated frontend E2E tests.
 - Dedicated compiled workflows for transactions, cards, loans and statements.
 - A formal license, contribution policy or supported production security boundary.
 

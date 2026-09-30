@@ -39,7 +39,7 @@ The deployment is a local multi-process development setup: Vite serves the React
 | Replay — `replay/engine.py` | Validates artifact and inputs, launches a fresh surface, executes stored actions, checks known business outcomes/checkpoints, extracts outputs and records screenshot paths. | Playwright and target UI. The normal replay module does not import/use the LLM factory. |
 | Safety — `safety/policy.py` | Validates URL scheme/host/path and rejects selected keyword-classified risky actions unless configured otherwise; redacts strings and sensitive dictionary fields. | Heuristic rules. Not authentication, isolation, prompt-injection prevention, or a production sandbox. |
 | Handoff manager — `escalation/manager.py` | Holds active `PlaywrightWebSurface` and handoff state in process memory; executes bounded operator action kinds and closes a session. | Backend process lifetime. Sessions cannot be reconstructed from persisted rows after restart. |
-| Persistence — `db/models.py`, `db/database.py` | Persists synthetic banking entities, artifacts, runs, steps, recordings, events, handoffs and idempotency records. | SQLite/aiosqlite is the installed/default route. Startup uses `create_all`; no migration runner. |
+| Persistence and identity — `db/models.py`, `db/database.py`, `db/migration_runner.py`, `security/` | Persists synthetic banking entities, artifacts, tenant-scoped runs, recordings, handoffs, checkpoints, operators, invitations and audit records. | SQLite/aiosqlite is the configured/default route; versioned additive migrations run at startup. PostgreSQL driver/deployment support is not installed in this checkout. |
 | Target simulator — `target-app/app.py`, `db/banking.py` | Renders the synthetic member interface and provides member-data API and dialog/delay controls. | Shares `DATABASE_URL` configuration and synthetic DB tables. Data is sample data, not a ledger. |
 
 ## Component flow
@@ -156,7 +156,7 @@ sequenceDiagram
     API->>Manager: Close session
 ```
 
-This diagram describes the live-process path. On backend startup, persisted `AWAITING_HUMAN` rows are marked `SESSION_LOST`; a database row cannot restore the browser context.
+This diagram describes the live-process path. On backend startup, persisted live-browser handoffs become `RECOVERY_REQUIRED`; deterministic replay can reconstruct eligible actions from the target root after validating inputs and artifact identity. A database row cannot restore the original browser context.
 
 ### Evidence persistence
 
@@ -182,7 +182,7 @@ sequenceDiagram
 
 ## Trust boundaries
 
-1. **Operator to API:** request schema validates a goal, target literal, input map, and optional execution mode. There is no authentication or user identity boundary.
+1. **Operator to API:** JWT/session authentication resolves an active operator and tenant. Role checks and tenant-scoped query filters authorize run, recording, handoff, audit and evidence access. Public self-registration assigns the standard `OPERATOR` role and active `default` tenant on the server; clients cannot select a tenant or role.
 2. **Page to model:** interactive DOM data and page text enter a Mistral prompt as untrusted content. The prompt says not to follow page instructions, but this instruction is not a complete prompt-injection defense.
 3. **Model to browser:** returned JSON is schema-validated and passed to host/path/action-risk checks before supported actions execute. Those checks are heuristic and do not prove a selector is read-only.
 4. **Artifact storage to replay:** Pydantic validates structure/references; artifacts still contain selectors and static expressions that may drift or be unsafe if storage is tampered with. No cryptographic signature is implemented.
@@ -202,9 +202,9 @@ sequenceDiagram
 
 ## Data and execution model
 
-SQLAlchemy models persist `runs`, `run_steps`, `discovery_recordings`, `recording_events`, `handoff_records`, `capabilities`, `capability_versions`, `workflow_idempotency`, and synthetic banking entities. `EvidenceModel` exists in the schema but current route/engine paths use path fields and JSON event data instead. The active database is selected by `DATABASE_URL`, defaulting to `sqlite+aiosqlite:///./orchestration.db`.
+SQLAlchemy models persist `runs`, `run_steps`, `discovery_recordings`, `recording_events`, `handoff_records`, `execution_checkpoints`, `registration_invites`, operators/tenants, audit events, capabilities, capability versions, workflow idempotency and synthetic banking entities. The active database is selected by `DATABASE_URL`, defaulting to `sqlite+aiosqlite:///./orchestration.db`.
 
-Evidence images, discovery trace JSON and artifact JSON mirrors are filesystem outputs under `EVIDENCE_DIR`; DB rows remain the source used by listing APIs. `create_all` adds missing tables but does not alter existing columns. The SQL file under `backend/migrations` has no built-in migration command.
+Evidence images, discovery trace JSON and artifact JSON mirrors are filesystem outputs under `EVIDENCE_DIR`; DB rows remain the source used by listing APIs. The startup migration runner applies additive versions `0003_handoff_security` and `0004_auth_registration` and then ensures model tables exist. Database rollback requires restoring a backup; automated downgrade is not provided.
 
 ## Runtime topology and limitations
 
@@ -212,6 +212,6 @@ Evidence images, discovery trace JSON and artifact JSON mirrors are filesystem o
 - The backend defaults to `127.0.0.1:8000`; the target simulator binds `127.0.0.1:3001` in its script entry point.
 - `MAX_CONCURRENT_RUNS` defaults to 2, enforced by an in-process semaphore. It is not a distributed queue or cross-process concurrency lock.
 - Docker Compose is not runnable from this repository as checked out: Dockerfiles are absent and its PostgreSQL driver dependency is undeclared.
-- No native desktop surface, durable session store, API auth, tenant isolation, or production deployment is present.
+- No native desktop surface, durable browser-session store, shared cross-process rate limiter, PostgreSQL driver/deployment setup, or production deployment is present.
 
 Related detail: [workflow lifecycle](workflow-lifecycle.md), [discovery](discovery-and-recording.md), [artifacts](capability-artifacts.md), [replay](deterministic-replay.md), [safety](safety-and-security.md).

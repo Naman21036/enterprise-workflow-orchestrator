@@ -10,6 +10,8 @@ from backend.app.surfaces.playwright import PlaywrightWebSurface
 from backend.app.replay.engine import DeterministicReplayEngine
 from backend.app.db.models import RunModel, RunStepModel
 from backend.app.core.config import settings
+from backend.app.core.errors import ArtifactValidationError
+from backend.app.security.auth import Principal, authorize, get_current_principal
 
 router = APIRouter()
 
@@ -51,23 +53,33 @@ class ExplicitReplayRequest(BaseModel):
         return value
 
 @router.post("/workflows/run")
-async def run_workflow_goal(req: RunGoalRequest, db: AsyncSession = Depends(get_db), idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")):
+async def run_workflow_goal(req: RunGoalRequest, db: AsyncSession = Depends(get_db), idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"), principal: Principal = Depends(get_current_principal)):
+    authorize(principal, "runs:create")
     router_engine = WorkflowRouter(db)
-    result = await router_engine.execute_goal(
-        goal=req.goal,
-        target_app=req.target_app,
-        input_parameters=req.input_parameters,
-        force_mode=req.force_mode,
-        idempotency_key=idempotency_key,
-    )
+    try:
+        result = await router_engine.execute_goal(
+            goal=req.goal,
+            target_app=req.target_app,
+            input_parameters=req.input_parameters,
+            force_mode=req.force_mode,
+            idempotency_key=idempotency_key,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.operator_id,
+        )
+    except ArtifactValidationError as exc:
+        return {"status": "FAILED", "error_code": exc.code, "error": exc.message, "llm_decision_calls": 0}
     if result.get("error_code") == "IDEMPOTENCY_KEY_CONFLICT":
         raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": result["error"]})
     return result
 
 @router.post("/workflows/replay")
-async def replay_capability(req: ExplicitReplayRequest, db: AsyncSession = Depends(get_db), idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")):
+async def replay_capability(req: ExplicitReplayRequest, db: AsyncSession = Depends(get_db), idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"), principal: Principal = Depends(get_current_principal)):
+    authorize(principal, "runs:create")
     storage = ArtifactStorage(db)
-    artifact = await storage.get_artifact(req.capability_id, req.version)
+    try:
+        artifact = await storage.get_artifact(req.capability_id, req.version)
+    except ArtifactValidationError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message}) from exc
     if not artifact:
         raise HTTPException(status_code=404, detail=f"Capability '{req.capability_id}' v{req.version} not found")
 
@@ -79,6 +91,8 @@ async def replay_capability(req: ExplicitReplayRequest, db: AsyncSession = Depen
         force_mode="REPLAY",
         requested_capability_id=req.capability_id,
         idempotency_key=idempotency_key,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.operator_id,
     )
     if result.get("error_code") == "IDEMPOTENCY_KEY_CONFLICT":
         raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": result["error"]})

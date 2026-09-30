@@ -6,7 +6,8 @@ import { RecordingExplorerView } from './components/RecordingExplorerView';
 import { HandoffView } from './components/HandoffView';
 import { EvidenceView } from './components/EvidenceView';
 import { SettingsView } from './components/SettingsView';
-import { fetchHealth } from './services/api';
+import { fetchCurrentOperator, fetchHealth, loginOperator, logoutOperator, registerOperator, type OperatorSession } from './services/api';
+import { AuthView } from './components/AuthView';
 
 type Page = 'overview' | 'new' | 'runs' | 'capabilities' | 'recordings' | 'handoff' | 'evidence' | 'settings';
 const groups: { label: string; items: { id: Page; label: string; icon: LucideIcon }[] }[] = [
@@ -25,11 +26,17 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [operator, setOperator] = useState<OperatorSession | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const goToRun = (id: string, destination: Page = 'runs') => { setRunId(id); setPage(destination); setMenuOpen(false); };
 
   useEffect(() => { let mounted = true; const load = () => fetchHealth().then((data) => { if (mounted) setHealth(data); }).catch(() => { if (mounted) setHealth({ status: 'unavailable' }); }); load(); const timer = window.setInterval(load, 30000); return () => { mounted = false; window.clearInterval(timer); }; }, []);
+  useEffect(() => { let mounted = true; fetchCurrentOperator().then(value => { if (mounted) setOperator(value); }).catch(() => {}).finally(() => { if (mounted) setAuthChecked(true); }); return () => { mounted = false; }; }, []);
   useEffect(() => { const key = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setCommandOpen(true); } if (event.key === 'Escape') setCommandOpen(false); }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, []);
   const online = health?.status === 'healthy' && health?.database === 'healthy' && health?.target_application?.status === 'online' && health?.browser_automation?.status === 'installed';
+
+  if (!authChecked) return <main className="auth-screen"><div className="auth-loading">Loading operator session…</div></main>;
+  if (!operator) return <AuthView onSignIn={async (username, password) => setOperator(await loginOperator(username, password))} onRegister={registerOperator}/>;
 
   return <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <aside className={`sidebar ${menuOpen ? 'mobile-open' : ''}`}>
@@ -37,7 +44,7 @@ export default function App() {
       <div className="workspace-switch"><span className="workspace-avatar">N</span><span className="workspace-meta"><b>Northstar workspace</b><small>Local environment</small></span></div>
       <button className="sidebar-search" onClick={() => { setCommandOpen(true); setCommandQuery(''); }}><Search size={15}/><span>Quick find</span><kbd>⌘ K</kbd></button>
       <nav className="primary-nav" aria-label="Primary navigation">{groups.map(group => <div className="nav-group" key={group.label}><div className="nav-label">{group.label}</div>{group.items.map(item => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => { setPage(item.id as Page); setMenuOpen(false); }}><Icon size={17}/><span>{item.label}</span></button>; })}</div>)}</nav>
-      <div className="sidebar-bottom"><div className="safety-note"><span className="safety-icon"><Shield size={15}/></span><div><b>Safety controls active</b><small>Server-side policy enforced</small></div></div><div className="profile-row"><span className="profile-avatar">NG</span><span className="profile-name"><b>Naman Gupta</b><small>Operator</small></span></div></div>
+      <div className="sidebar-bottom"><div className="safety-note"><span className="safety-icon"><Shield size={15}/></span><div><b>Safety controls active</b><small>Server-side policy enforced</small></div></div><div className="profile-row"><span className="profile-avatar">{operator.username.slice(0, 2).toUpperCase()}</span><span className="profile-name"><b>{operator.username}</b><small>{operator.role} · {operator.tenant_id}</small></span><button className="auth-signout" onClick={async () => { await logoutOperator(); setOperator(null); }} title="Sign out">Sign out</button></div></div>
     </aside>
     {menuOpen && <button className="mobile-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)}/>}
     <div className="main-column">

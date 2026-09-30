@@ -13,9 +13,11 @@
 | Replay initialization | `unit/test_replay_initialization.py`: Windows Playwright permission error is classified before actions. | Does not test all runtime/browser versions. |
 | Router | `unit/test_router.py`: member extraction, missing member ID and actual-action count semantics. | Does not cover full end-to-end discovery/publication path. |
 | Safety | `unit/test_safety.py`: host validation, risk classification and selected redaction patterns. | Heuristics are not adversarially complete; screenshot OCR/secret scan absent. |
+| Authentication and registration | `unit/test_auth_and_checkpoint.py`, `unit/test_registration.py`: JWT integrity/expiry, bootstrap idempotence, login by username/email, self-service registration, validation, duplicate identity handling, throttling and tenant/role restrictions. | Tests use SQLite and an in-process ASGI client; no multi-process rate-limit backend or PostgreSQL test service is configured. |
+| Schema migration | `unit/test_migration_runner.py`: additive upgrade from a legacy SQLite operator/run schema, indexes and repeatable startup. | No PostgreSQL migration execution is verified in this checkout. |
 | LLM-free replay integration | `integration/test_critical_no_llm_replay.py`: patches LLM factory with a client that raises, then replays member 1002 against local app. | Requires target service, installed Chromium and process permission; only a narrow successful capability path. |
 
-There are 19 unit tests and one integration test (20 total in the full suite at the audit). There is no frontend unit test runner, Playwright browser E2E suite for the React app, or CI configuration detected.
+At the original audit there were 19 unit tests and one integration test (20 total). The current suite also includes safety-boundary, handoff-guard, artifact-storage, replay-boundary, observability, authentication, registration and migration coverage. There is no frontend unit test runner, Playwright browser E2E suite for the React app, or CI configuration detected.
 
 ## Commands
 
@@ -45,6 +47,25 @@ On 2026-09-29, after the documentation audit and prior implementation changes:
 - Local screenshots in `docs/screenshots/` were captured with Playwright against the running console after `All systems operational` appeared.
 
 These are local-environment results, not a claim that external Mistral availability or every workflow passes.
+
+## Latest safety, replay and telemetry verification
+
+On 2026-09-30, after the safety/HITL/telemetry changes:
+
+- `python -m compileall -q backend/app`: **passed**.
+- `python -m pytest backend/tests -q`: **37 passed**. This includes the real-browser LLM-free replay integration and the new guardrail/storage/handoff/observability tests. The real browser test needs local Playwright process permissions on Windows.
+- `npm run build`: **passed** (`tsc` and Vite, 1,477 modules).
+- A new synthetic **Mistral discovery** reached the provider after the OpenTelemetry context-manager bug was fixed. The provider returned HTTP 429 after the configured bounded retry; the attempt is persisted as `FAILED` / `MISTRAL_RATE_LIMITED`, with zero recorded browser actions and no published artifact.
+- A distinct `Deterministic Replay` run then loaded persisted `member_savings_lookup` v1.0.0 and completed successfully for synthetic member 1003. The run row is separate from the failed discovery, returns the expected output field names, and performs no LLM decision calls. This verifies cross-run stored-artifact replay for changed input, but it does not prove a new Mistral-created artifact because discovery was rate-limited.
+- A real simulator dialog produced a `BLOCKED` replay with a live page. The operator's exact `#confirm-dialog-btn` click was accepted once, and resume re-observed the same page and recorded `SUCCESS` for member 1002. The resolved run ID is `wf_55770ed0`; its handoff screenshot is under `evidence/escalations/`. A prior manual attempt to type after confirming was correctly rejected because confirmation had already navigated the page; the final validation used the expected confirm-then-resume lifecycle.
+- With `APEX_OTEL_ENABLED=true`, console output contained discovery/model-decision/replay spans and workflow/safety metrics. Telemetry used synthetic identifiers and filtered fields.
+- LangSmith configuration resolved as enabled/key-present without disclosing the credential, but a live `Client.list_runs` check was rejected with `LangSmithAuthError`. LangSmith trace upload is therefore **not confirmed** in this environment; the configured credential or workspace authorization must be corrected before claiming cloud trace delivery.
+
+These are observed local results. Do not interpret LangSmith's configured status as successful remote authentication or assume Mistral availability from its key-presence check.
+
+## Authentication and registration verification
+
+The previous full backend run passed **44 tests** before self-service registration replaced invitation-required signup. Re-run the backend suite and frontend production build when changing authentication. No React browser E2E runner is configured, so automated verification does not claim a visual form interaction test.
 
 ## High-value tests not yet present
 

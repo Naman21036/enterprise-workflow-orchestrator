@@ -22,10 +22,68 @@ export interface ExecutionResult {
 
 const API_BASE = '/api/v1';
 
+export interface OperatorSession {
+  operator_id: string;
+  username: string;
+  role: 'ADMIN' | 'OPERATOR' | 'VIEWER';
+  tenant_id: string;
+}
+
+export async function fetchCurrentOperator(): Promise<OperatorSession> {
+  return readJson(await fetch(`${API_BASE}/auth/me`, { credentials: 'same-origin' }), 'Sign in to continue');
+}
+
+export interface RegistrationPayload {
+  full_name: string;
+  username: string;
+  email: string;
+  password: string;
+  confirm_password: string;
+}
+
+export async function registerOperator(payload: RegistrationPayload): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/auth/register`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error('Registration service is unavailable. Check that the API is initialized, then try again.');
+  }
+  await readJson(res, 'Registration could not be completed');
+}
+
+export async function loginOperator(username: string, password: string): Promise<OperatorSession> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch {
+    throw new Error('Authentication service is unavailable. Check that the API is initialized, then try again.');
+  }
+  await readJson(res, 'Sign in failed');
+  return fetchCurrentOperator();
+}
+
+export async function logoutOperator(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'same-origin' });
+}
+
 async function readJson<T = any>(res: Response, fallback: string): Promise<T> {
   let body: any;
   try { body = await res.json(); } catch { body = null; }
-  if (!res.ok) throw new Error(body?.detail?.message || body?.detail?.error || body?.detail || body?.message || fallback);
+  if (!res.ok && res.status >= 500 && body === null) {
+    throw new Error('Authentication service is unavailable. Check backend setup and database initialization.');
+  }
+  if (!res.ok) {
+    const detail = Array.isArray(body?.detail)
+      ? body.detail.map((item: any) => item?.msg).filter(Boolean).join(' ')
+      : body?.detail?.message || body?.detail?.error || body?.detail || body?.message;
+    throw new Error(typeof detail === 'string' ? detail : fallback);
+  }
   return body as T;
 }
 
@@ -75,19 +133,26 @@ export async function fetchHandoffInfo(run_id: string) {
 }
 
 export async function submitOperatorAction(run_id: string, action_type: string, params: Record<string, any>) {
+  const action_id = crypto.randomUUID();
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(run_id)}/handoff/action`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action_type, params })
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': action_id },
+    body: JSON.stringify({ action_type, action_id, params })
   });
   return readJson(res, 'Operator action failed');
 }
 
-export async function resumeWorkflowRun(run_id: string) {
+export async function resumeWorkflowRun(run_id: string, inputs: Record<string, any> = {}, session_version?: number) {
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(run_id)}/resume`, {
-    method: 'POST'
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs, session_version })
   });
   return readJson(res, 'Workflow resume failed');
+}
+
+export async function cancelWorkflowRun(run_id: string) {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(run_id)}/cancel`, { method: 'POST' });
+  return readJson(res, 'Run cancellation failed');
 }
 
 export async function fetchSafetyPolicy() {

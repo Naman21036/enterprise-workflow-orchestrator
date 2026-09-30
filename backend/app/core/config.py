@@ -22,6 +22,22 @@ class Settings(BaseSettings):
     SAFETY_ALLOWED_DOMAINS: str = "localhost,127.0.0.1"
     SAFETY_ALLOW_RISKY_ACTIONS: bool = False
     EVIDENCE_DIR: str = "./evidence"
+    APEX_OTEL_ENABLED: bool = False
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str = ""
+    LANGSMITH_PROJECT: str = "apex-automation"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
+    APEX_AUTH_ENABLED: bool = True
+    APEX_JWT_SIGNING_KEY: str = ""
+    APEX_JWT_ISSUER: str = "apex-automation"
+    APEX_JWT_AUDIENCE: str = "apex-automation-api"
+    APEX_JWT_TTL_MINUTES: int = 60
+    APEX_BOOTSTRAP_ADMIN_USERNAME: str = ""
+    APEX_BOOTSTRAP_ADMIN_FULL_NAME: str = ""
+    APEX_BOOTSTRAP_ADMIN_EMAIL: str = ""
+    APEX_BOOTSTRAP_ADMIN_PASSWORD_HASH: str = ""
+    APEX_HANDOFF_SESSION_TTL_MINUTES: int = 120
+    APEX_AUTH_COOKIE_SECURE: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

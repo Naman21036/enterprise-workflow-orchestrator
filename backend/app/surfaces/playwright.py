@@ -1,9 +1,11 @@
 import os
 import asyncio
+from urllib.parse import urlparse
 from typing import Dict, Any, List, Optional
 from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page
 from backend.app.surfaces.base import ComputerSurface
 from backend.app.core.logging import logger
+from backend.app.safety.policy import default_safety_policy
 
 class PlaywrightWebSurface(ComputerSurface):
     def __init__(self, headless: bool = True, page: Optional[Page] = None):
@@ -15,12 +17,37 @@ class PlaywrightWebSurface(ComputerSurface):
         self._is_external_page = page is not None
         self.last_failed_operation: Optional[str] = None
         self.last_operation: Optional[str] = None
+        self.blocked_navigation_url: Optional[str] = None
+
+    async def _guard_navigation(self, route, request) -> None:
+        """Enforce the target policy on top-level navigations, including redirects."""
+        frame = request.frame
+        if request.is_navigation_request() and frame == frame.page.main_frame:
+            if not default_safety_policy.validate_url(request.url):
+                self.blocked_navigation_url = request.url
+                await route.abort("blockedbyclient")
+                logger.warning("Blocked browser navigation outside safety allowlist", host=urlparse(request.url).hostname or "unknown")
+                return
+        await route.continue_()
+
+    def _action_allowed(self, action_type: str, selector: str = "", value: str = "") -> bool:
+        current_url = self.page.url if self.page else ""
+        allowed, reason = default_safety_policy.validate_action(action_type, current_url, selector, value)
+        if not allowed:
+            logger.warning("Browser surface blocked action by safety policy", action_type=action_type, decision="DENY", reason=reason[:180])
+        return allowed
 
     async def connect(self, target_url: str) -> bool:
+        if not default_safety_policy.validate_url(target_url):
+            raise PermissionError("Target URL is outside the configured safety allowlist.")
+        self.blocked_navigation_url = None
         if self.page and not self.page.is_closed():
+            await self.page.context.route("**/*", self._guard_navigation)
             try:
                 self.last_operation = "page.goto"
                 await self.page.goto(target_url, wait_until="networkidle")
+                if self.blocked_navigation_url:
+                    raise PermissionError("Navigation redirect was blocked by the configured safety policy.")
             except Exception as exc:
                 logger.error("Target navigation failed", operation="page.goto", error_type=type(exc).__name__)
                 raise
@@ -39,9 +66,12 @@ class PlaywrightWebSurface(ComputerSurface):
             self.last_operation = operation
             self._context = await self._browser.new_context(viewport={"width": 1280, "height": 800})
             self.page = await self._context.new_page()
+            await self._context.route("**/*", self._guard_navigation)
             operation = "target_navigation"
             self.last_operation = operation
             await self.page.goto(target_url, wait_until="networkidle")
+            if self.blocked_navigation_url:
+                raise PermissionError("Navigation redirect was blocked by the configured safety policy.")
         except PermissionError as exc:
             self.last_failed_operation = operation
             logger.error(
@@ -63,9 +93,29 @@ class PlaywrightWebSurface(ComputerSurface):
     async def navigate(self, url: str) -> bool:
         if not self.page:
             return False
+        if not default_safety_policy.validate_url(url):
+            raise PermissionError("Navigation target is outside the configured safety allowlist.")
+        self.blocked_navigation_url = None
         self.last_operation = "page.goto"
         await self.page.goto(url, wait_until="networkidle")
+        if self.blocked_navigation_url or not default_safety_policy.validate_url(self.page.url):
+            raise PermissionError("Navigation or redirect was blocked by the configured safety policy.")
         return True
+
+    async def click_approved_confirmation(self) -> bool:
+        """Execute the sole human-approved simulator confirmation action."""
+        if not self.page or not default_safety_policy.validate_url(self.page.url):
+            return False
+        selector = "#confirm-dialog-btn"
+        try:
+            self.last_operation = "approved_confirmation.click"
+            locator = self.page.locator(selector).first
+            await locator.wait_for(state="visible", timeout=1500)
+            await locator.click()
+            return True
+        except Exception as exc:
+            logger.warning("Approved confirmation control was unavailable", error_type=type(exc).__name__)
+            return False
 
     async def observe(self) -> Dict[str, Any]:
         if not self.page:
@@ -136,6 +186,8 @@ class PlaywrightWebSurface(ComputerSurface):
     async def click(self, selector: str) -> bool:
         if not self.page:
             return False
+        if not self._action_allowed("click", selector):
+            return False
         try:
             self.last_operation = "locator.click"
             loc = self.page.locator(selector).first
@@ -150,6 +202,8 @@ class PlaywrightWebSurface(ComputerSurface):
     async def fill(self, selector: str, value: str) -> bool:
         if not self.page:
             return False
+        if not self._action_allowed("fill", selector, value):
+            return False
         try:
             self.last_operation = "locator.fill"
             loc = self.page.locator(selector).first
@@ -163,6 +217,8 @@ class PlaywrightWebSurface(ComputerSurface):
     async def select(self, selector: str, option: str) -> bool:
         if not self.page:
             return False
+        if not self._action_allowed("select", selector, option):
+            return False
         try:
             loc = self.page.locator(selector).first
             await loc.select_option(option)
@@ -173,6 +229,8 @@ class PlaywrightWebSurface(ComputerSurface):
 
     async def extract(self, selector: str, attribute: Optional[str] = None) -> Optional[str]:
         if not self.page:
+            return None
+        if not self._action_allowed("extract", selector):
             return None
         try:
             self.last_operation = "locator.extract"

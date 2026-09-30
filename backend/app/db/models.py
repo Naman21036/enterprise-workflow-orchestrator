@@ -62,6 +62,8 @@ class RunModel(Base):
     target_app = Column(String, nullable=False)
     execution_mode = Column(String, nullable=False)
     status = Column(String, nullable=False)
+    tenant_id = Column(String(80), ForeignKey("tenants.id"), nullable=False, default="default", index=True)
+    owner_id = Column(String(80), ForeignKey("operators.id", ondelete="SET NULL"), nullable=True, index=True)
     capability_id = Column(String, nullable=True, index=True)
     capability_version = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -83,6 +85,133 @@ class WorkflowIdempotencyModel(Base):
     request_hash = Column(String(64), nullable=False)
     run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class TenantModel(Base):
+    __tablename__ = "tenants"
+
+    id = Column(String(80), primary_key=True)
+    name = Column(String(160), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class OperatorModel(Base):
+    __tablename__ = "operators"
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_operators_username"),
+        UniqueConstraint("email", name="uq_operators_email"),
+        CheckConstraint("role IN ('ADMIN', 'OPERATOR', 'VIEWER')", name="ck_operator_role"),
+    )
+
+    id = Column(String(80), primary_key=True, default=generate_uuid)
+    tenant_id = Column(String(80), ForeignKey("tenants.id"), nullable=False, index=True)
+    username = Column(String(160), nullable=False)
+    full_name = Column(String(160), nullable=True)
+    email = Column(String(320), nullable=True)
+    password_hash = Column(String(256), nullable=False)
+    role = Column(String(16), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class RegistrationInviteModel(Base):
+    __tablename__ = "registration_invites"
+    __table_args__ = (
+        UniqueConstraint("token_sha256", name="uq_registration_invite_token_sha256"),
+        CheckConstraint("role IN ('OPERATOR', 'VIEWER')", name="ck_registration_invite_role"),
+        Index("ix_registration_invites_tenant_email", "tenant_id", "email"),
+    )
+
+    id = Column(String(80), primary_key=True, default=generate_uuid)
+    tenant_id = Column(String(80), ForeignKey("tenants.id"), nullable=False, index=True)
+    email = Column(String(320), nullable=False)
+    role = Column(String(16), nullable=False)
+    token_sha256 = Column(String(64), nullable=False)
+    created_by = Column(String(80), ForeignKey("operators.id", ondelete="SET NULL"), nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class BootstrapStateModel(Base):
+    __tablename__ = "bootstrap_state"
+
+    key = Column(String(32), primary_key=True)
+    operator_id = Column(String(80), ForeignKey("operators.id", ondelete="SET NULL"), nullable=True)
+    completed_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class AuditEventModel(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_tenant_created", "tenant_id", "created_at"),
+        Index("ix_audit_run_created", "run_id", "created_at"),
+    )
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    tenant_id = Column(String(80), nullable=False, index=True)
+    run_id = Column(String, ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    actor_id = Column(String, ForeignKey("operators.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(String(80), nullable=False)
+    correlation_id = Column(String(128), nullable=False, index=True)
+    payload_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExecutionCheckpointModel(Base):
+    __tablename__ = "execution_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("run_id", "checkpoint_id", name="uq_checkpoint_run_id"),
+        Index("ix_checkpoint_run_created", "run_id", "created_at"),
+    )
+
+    checkpoint_id = Column(String(96), primary_key=True)
+    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(String(80), nullable=False, index=True)
+    capability_id = Column(String(80), nullable=False)
+    capability_version = Column(String(32), nullable=False)
+    plan_sha256 = Column(String(64), nullable=False)
+    state = Column(String(32), nullable=False, default="RUNNING")
+    current_step = Column(Integer, nullable=False, default=0)
+    completed_actions_json = Column(JSON, nullable=False, default=list)
+    pending_actions_json = Column(JSON, nullable=False, default=list)
+    action_history_json = Column(JSON, nullable=False, default=list)
+    required_input_names_json = Column(JSON, nullable=False, default=list)
+    surface_state_json = Column(JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class HandoffSessionModel(Base):
+    __tablename__ = "handoff_sessions"
+    __table_args__ = (
+        UniqueConstraint("run_id", "checkpoint_id", name="uq_handoff_run_checkpoint"),
+        Index("ix_handoff_sessions_tenant_state_expiry", "tenant_id", "state", "expires_at"),
+    )
+
+    id = Column(String(96), primary_key=True, default=generate_uuid)
+    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(String(80), ForeignKey("tenants.id"), nullable=False, index=True)
+    checkpoint_id = Column(String(96), ForeignKey("execution_checkpoints.checkpoint_id"), nullable=False, index=True)
+    state = Column(String(32), nullable=False, default="AWAITING_OPERATOR")
+    reason = Column(Text, nullable=False)
+    details_json = Column(JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class SchemaMigrationModel(Base):
+    __tablename__ = "schema_migrations"
+
+    version = Column(String(32), primary_key=True)
+    applied_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class DiscoveryRecordingModel(Base):
@@ -125,11 +254,15 @@ class RecordingEventModel(Base):
 
 class RunStepModel(Base):
     __tablename__ = "run_steps"
-    __table_args__ = (UniqueConstraint("run_id", "step_number", name="uq_run_step_number"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_number", name="uq_run_step_number"),
+        UniqueConstraint("run_id", "action_id", name="uq_run_step_action_id"),
+    )
 
     id = Column(String, primary_key=True, default=generate_uuid)
     run_id = Column(String, ForeignKey("runs.id"), nullable=False, index=True)
     step_number = Column(Integer, nullable=False)
+    action_id = Column(String(96), nullable=True, index=True)
     action_type = Column(String, nullable=False)
     target_description = Column(String, nullable=True)
     status = Column(String, nullable=False)

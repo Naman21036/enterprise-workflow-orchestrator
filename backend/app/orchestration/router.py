@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.db.models import RunModel, RunStepModel, HandoffRecordModel, DiscoveryRecordingModel, RecordingEventModel, WorkflowIdempotencyModel
+from backend.app.db.models import RunModel, RunStepModel, HandoffRecordModel, ExecutionCheckpointModel, DiscoveryRecordingModel, RecordingEventModel, WorkflowIdempotencyModel
 from backend.app.artifacts.storage import ArtifactStorage
 from backend.app.artifacts.compiler import ArtifactCompiler
 from backend.app.artifacts.schema import CapabilityArtifact
@@ -21,6 +21,8 @@ from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.core.errors import execution_outcome_category
 from backend.app.safety.policy import default_safety_policy
+from backend.app.observability import span, set_attributes, record_workflow, record_escalation, langsmith_context, current_trace_id
+from backend.app.orchestration.checkpoints import create_execution_checkpoint, persist_step_progress, set_checkpoint_state, create_handoff_session, sanitize_surface_state
 
 _run_slots = asyncio.Semaphore(max(1, settings.MAX_CONCURRENT_RUNS))
 _RECORDING_TRANSITIONS = {
@@ -190,9 +192,27 @@ class WorkflowRouter:
         force_mode: Optional[str] = None,
         requested_capability_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        tenant_id: str = "default",
+        actor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         async with _run_slots:
-            return await self._execute_goal(goal, target_app, input_parameters, force_mode, requested_capability_id, idempotency_key)
+            started = asyncio.get_running_loop().time()
+            mode = "Deterministic Replay" if force_mode == "REPLAY" else "Discovery" if force_mode == "DISCOVERY" else "Auto"
+            with span("apex.workflow.execute", {"execution.mode": mode, "surface.type": "web"}) as current:
+                try:
+                    result = await self._execute_goal(goal, target_app, input_parameters, force_mode, requested_capability_id, idempotency_key, tenant_id, actor_id)
+                    set_attributes(current, {
+                        "workflow.run_id": result.get("run_id"),
+                        "workflow.status": result.get("status"),
+                        "capability.id": result.get("capability_id"),
+                        "artifact.version": result.get("capability_version"),
+                        "execution.mode": result.get("execution_mode") or mode,
+                    })
+                    record_workflow(result.get("status", "FAILED"), result.get("execution_mode") or mode, asyncio.get_running_loop().time() - started)
+                    return result
+                except Exception:
+                    record_workflow("FAILED", mode, asyncio.get_running_loop().time() - started)
+                    raise
 
     async def _execute_goal(
         self,
@@ -202,6 +222,8 @@ class WorkflowRouter:
         force_mode: Optional[str] = None,
         requested_capability_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        tenant_id: str = "default",
+        actor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         persisted_goal = default_safety_policy.sanitize_sensitive_data(goal)
         logger.info("Routing workflow goal request", goal=persisted_goal, target_app=target_app, input_names=sorted((input_parameters or {}).keys()))
@@ -223,13 +245,14 @@ class WorkflowRouter:
         if idempotency_key is not None:
             if not re.fullmatch(r"[\x21-\x7e]{8,255}", idempotency_key):
                 return {"status": "FAILED", "error_code": "IDEMPOTENCY_KEY_INVALID", "error": "Idempotency-Key must be 8 to 255 visible ASCII characters.", "llm_decision_calls": 0}
-            key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+            key_hash = hashlib.sha256(f"{tenant_id}:{idempotency_key}".encode("utf-8")).hexdigest()
         request_fingerprint = json.dumps({
             "goal": goal.strip(),
             "target_app": target_app,
             "inputs": bound_inputs,
             "force_mode": force_mode.upper() if force_mode else None,
             "capability_id": requested_capability_id,
+            "tenant_id": tenant_id,
         }, sort_keys=True, separators=(",", ":"), default=str)
         request_hash = hashlib.sha256(request_fingerprint.encode("utf-8")).hexdigest()
         if key_hash:
@@ -243,7 +266,8 @@ class WorkflowRouter:
         # Capability Lookup
         matching_artifact = None
         if not force_mode or force_mode.upper() == "REPLAY":
-            matching_artifact = await self.lookup_capability(goal, target_app, requested_capability_id)
+            with span("apex.capability.match", {"workflow.operation": "goal_lookup", "target.application": target_app}):
+                matching_artifact = await self.lookup_capability(goal, target_app, requested_capability_id)
 
         if force_mode and force_mode.upper() == "REPLAY" and not matching_artifact:
             return {
@@ -270,7 +294,9 @@ class WorkflowRouter:
                 status="RUNNING",
                 capability_id=capability_id,
                 capability_version=capability_version,
-                created_at=start_time
+                created_at=start_time,
+                tenant_id=tenant_id,
+                owner_id=actor_id,
             )
             duplicate = await self._claim_run(run_model, key_hash, request_hash)
             if duplicate:
@@ -279,12 +305,27 @@ class WorkflowRouter:
             surface = PlaywrightWebSurface(headless=True)
             session_manager.register_surface(run_id, surface)
             engine = DeterministicReplayEngine(surface)
+            checkpoint = await create_execution_checkpoint(
+                self.db,
+                run_id=run_id,
+                tenant_id=tenant_id,
+                artifact=matching_artifact,
+                input_names=sorted(bound_inputs),
+            )
+
+            async def persist_progress(step, event, status):
+                await persist_step_progress(
+                    self.db, checkpoint.checkpoint_id, matching_artifact,
+                    step, event, status,
+                    await surface.current_url() if surface.page and not surface.page.is_closed() else None,
+                )
 
             try:
                 result_status, step_logs, outputs, error_msg = await engine.execute_replay(
                     artifact=matching_artifact,
                     inputs=bound_inputs,
-                    run_id=run_id
+                    run_id=run_id,
+                    progress_callback=persist_progress,
                 )
 
                 finish_time = datetime.now(timezone.utc)
@@ -308,6 +349,7 @@ class WorkflowRouter:
                     self.db.add(RunStepModel(
                         run_id=run_id,
                         step_number=s["step_number"],
+                        action_id=s.get("action_id"),
                         action_type=s["action_type"],
                         target_description=s.get("target_selector"),
                         status=s["status"],
@@ -317,6 +359,12 @@ class WorkflowRouter:
                     ))
 
                 if result_status == "BLOCKED":
+                    await set_checkpoint_state(self.db, checkpoint.checkpoint_id, "AWAITING_OPERATOR")
+                    persistent_session = await create_handoff_session(
+                        self.db, checkpoint, error_msg or "Operator intervention required.",
+                        step_logs[-1]["step_number"] if step_logs else 1,
+                    )
+                    record_escalation("confirmation_dialog")
                     # Create Handoff Record
                     handoff = HandoffRecordModel(
                         run_id=run_id,
@@ -331,9 +379,12 @@ class WorkflowRouter:
                         "status": "AWAITING_HUMAN",
                         "reason": error_msg,
                         "step_number": handoff.step_number,
-                        "screenshot_path": handoff.screenshot_path
+                        "screenshot_path": handoff.screenshot_path,
+                        "checkpoint_id": checkpoint.checkpoint_id,
+                        "session_id": persistent_session.id,
                     })
                 else:
+                    await set_checkpoint_state(self.db, checkpoint.checkpoint_id, result_status)
                     await surface.close()
 
                 await self.db.commit()
@@ -355,6 +406,10 @@ class WorkflowRouter:
                 }
 
             except Exception as e:
+                try:
+                    await set_checkpoint_state(self.db, checkpoint.checkpoint_id, "FAILED")
+                except Exception:
+                    await self.db.rollback()
                 await surface.close()
                 error_code = "PERMISSION_DENIED" if isinstance(e, PermissionError) else "REPLAY_EXECUTION_ERROR"
                 operation = surface.last_operation or "workflow_execution"
@@ -386,7 +441,9 @@ class WorkflowRouter:
                 status="RUNNING",
                 capability_id=cap_id,
                 capability_version="1.0.0",
-                created_at=start_time
+                created_at=start_time,
+                tenant_id=tenant_id,
+                owner_id=actor_id,
             )
             duplicate = await self._claim_run(run_model, key_hash, request_hash)
             if duplicate:
@@ -508,15 +565,23 @@ class WorkflowRouter:
                 await save_recording_event("MODEL_DECISION", payload)
 
             try:
-                async with asyncio.timeout(max(1, settings.MAX_DISCOVERY_DURATION_SECONDS)):
-                    success, trace, discovery_res = await agent.run_discovery(
-                        goal=goal,
-                        target_url=settings.TARGET_APP_URL,
-                        run_id=run_id,
-                        on_step=persist_recording_event,
-                        on_observation=persist_observation,
-                        on_provider_event=persist_provider_event,
-                    )
+                with langsmith_context({
+                    "run_id": run_id,
+                    "capability_id": cap_id,
+                    "execution_mode": "Discovery",
+                    "otel_trace_id": current_trace_id(),
+                }):
+                    with span("apex.discovery.execute", {"workflow.run_id": run_id, "capability.id": cap_id, "surface.type": "web"}) as discovery_span:
+                        async with asyncio.timeout(max(1, settings.MAX_DISCOVERY_DURATION_SECONDS)):
+                            success, trace, discovery_res = await agent.run_discovery(
+                                goal=goal,
+                                target_url=settings.TARGET_APP_URL,
+                                run_id=run_id,
+                                on_step=persist_recording_event,
+                                on_observation=persist_observation,
+                                on_provider_event=persist_provider_event,
+                            )
+                        set_attributes(discovery_span, {"workflow.status": "SUCCESS" if success else "FAILED", "llm.decision_calls": agent.llm_decision_calls})
 
                 finish_time = datetime.now(timezone.utc)
                 dur = (finish_time - start_time).total_seconds()
@@ -531,17 +596,18 @@ class WorkflowRouter:
                     else:
                         compiled_cap_id = cap_id
                     artifact_version = await self.storage.next_version(compiled_cap_id)
-                    artifact = self.compiler.compile_trace(
-                        capability_id=compiled_cap_id,
-                        name=f"Capability for: {persisted_goal[:40]}",
-                        description=f"Auto-compiled capability artifact for '{persisted_goal}'",
-                        goal=persisted_goal,
-                        discovery_trace=trace,
-                        extracted_outputs=discovery_res,
-                        target_app=target_app,
-                        source_recording_id=recording_id,
-                        version=artifact_version,
-                    )
+                    with span("apex.artifact.compile", {"workflow.run_id": run_id, "capability.id": compiled_cap_id, "artifact.version": artifact_version}):
+                        artifact = self.compiler.compile_trace(
+                            capability_id=compiled_cap_id,
+                            name=f"Capability for: {persisted_goal[:40]}",
+                            description=f"Auto-compiled capability artifact for '{persisted_goal}'",
+                            goal=persisted_goal,
+                            discovery_trace=trace,
+                            extracted_outputs=discovery_res,
+                            target_app=target_app,
+                            source_recording_id=recording_id,
+                            version=artifact_version,
+                        )
                     artifact = CapabilityArtifact.validate_for_publication(artifact.model_dump())
                     self._transition_recording(recording, "DISCOVERY_COMPLETED")
                     recording.completed_at = finish_time
@@ -569,6 +635,8 @@ class WorkflowRouter:
                         status="RUNNING",
                         capability_id=compiled_cap_id,
                         capability_version=artifact.version,
+                        tenant_id=tenant_id,
+                        owner_id=actor_id,
                         created_at=replay_started,
                     )
                     self.db.add(replay_run)
@@ -624,20 +692,63 @@ class WorkflowRouter:
                     run_model.duration_seconds = dur
                     run_model.result_json = {"output_fields": sorted(replay_outputs.keys()), "values_redacted": True}
                 elif discovery_res.get("error") == "HITL_REQUIRED":
+                    safe_handoff_reason = default_safety_policy.sanitize_sensitive_data(str(discovery_res.get("reason", "Human intervention required.")))[:1000]
+                    record_escalation("agent_or_dialog_escalation")
                     self._transition_recording(recording, "BLOCKED")
                     recording.completed_at = finish_time
                     recording.actions_json = self._recorded_actions(trace)
-                    recording.checkpoints_json = [{"outcome": "BLOCKED", "classification": "HUMAN_INTERVENTION_REQUIRED", "reason": default_safety_policy.sanitize_sensitive_data(discovery_res.get("reason", "Human intervention required."))}]
+                    recording.checkpoints_json = [{"outcome": "BLOCKED", "classification": "HUMAN_INTERVENTION_REQUIRED", "reason": safe_handoff_reason}]
+                    discovery_history = []
+                    for event in trace:
+                        if not getattr(event, "ui_action_executed", False):
+                            continue
+                        action_type = event.action.action_type
+                        selector = event.action.selector or ""
+                        action_id = "act_" + hashlib.sha256(f"{run_id}:{event.step_number}:{action_type}:{selector}".encode()).hexdigest()[:40]
+                        risk = default_safety_policy.classify_action_risk(action_type, selector, "")
+                        discovery_history.append({
+                            "action_id": action_id,
+                            "step_number": event.step_number,
+                            "action_type": action_type,
+                            "target": default_safety_policy.sanitize_sensitive_data(selector) if selector else "[ROUTE REDACTED]",
+                            "status": "SUCCESS" if event.status == "SUCCESS" else "FAILED",
+                            "retry_policy": "SAFE_TO_RETRY_AFTER_STATE_RECONSTRUCTION" if risk in {"LOW", "MEDIUM"} else "NEVER_AUTOMATICALLY_RETRY",
+                        })
+                    discovery_plan_hash = hashlib.sha256(json.dumps(discovery_history, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    checkpoint_id = "cp_" + hashlib.sha256(f"{run_id}:{discovery_plan_hash}".encode()).hexdigest()[:40]
+                    blocked_step = trace[-1].step_number if trace else 1
+                    checkpoint = ExecutionCheckpointModel(
+                        checkpoint_id=checkpoint_id,
+                        run_id=run_id,
+                        tenant_id=tenant_id,
+                        capability_id=cap_id,
+                        capability_version="1.0.0",
+                        plan_sha256=discovery_plan_hash,
+                        state="AWAITING_OPERATOR",
+                        current_step=blocked_step,
+                        completed_actions_json=[item["action_id"] for item in discovery_history if item["status"] == "SUCCESS"],
+                        pending_actions_json=[item["action_id"] for item in discovery_history if item["status"] != "SUCCESS"],
+                        action_history_json=discovery_history,
+                        required_input_names_json=sorted(bound_inputs),
+                        surface_state_json=sanitize_surface_state(await surface.current_url()),
+                        version=1,
+                    )
+                    self.db.add(checkpoint)
+                    await self.db.flush()
+                    persistent_session = await create_handoff_session(
+                        self.db, checkpoint, safe_handoff_reason, blocked_step,
+                    )
+                    persistent_session.details_json = {"step_number": blocked_step, "recovery_mode": "DISCOVERY_RESTART_ONLY"}
                     run_model.status = "BLOCKED"
                     run_model.error_code = "HUMAN_INTERVENTION_REQUIRED"
                     run_model.finished_at = finish_time
                     run_model.duration_seconds = dur
-                    run_model.error_message = discovery_res.get("reason")
+                    run_model.error_message = safe_handoff_reason
 
                     handoff = HandoffRecordModel(
                         run_id=run_id,
                         status="AWAITING_HUMAN",
-                        reason=discovery_res.get("reason", "Confirmation required"),
+                        reason=safe_handoff_reason or "Confirmation required",
                         step_number=trace[-1].step_number if trace else 1,
                         screenshot_path=trace[-1].screenshot_path if trace else None
                     )
@@ -645,9 +756,11 @@ class WorkflowRouter:
                     session_manager.set_handoff_state(run_id, {
                         "run_id": run_id,
                         "status": "AWAITING_HUMAN",
-                        "reason": discovery_res.get("reason"),
+                        "reason": safe_handoff_reason,
                         "step_number": handoff.step_number,
-                        "screenshot_path": handoff.screenshot_path
+                        "screenshot_path": handoff.screenshot_path,
+                        "checkpoint_id": checkpoint.checkpoint_id,
+                        "session_id": persistent_session.id,
                     })
                 else:
                     self._transition_recording(recording, "FAILED")

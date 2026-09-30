@@ -62,7 +62,7 @@ npm run dev
 
 Open the console at `http://127.0.0.1:3000`; target app at `http://127.0.0.1:3001`; Swagger UI at `http://127.0.0.1:8000/docs`.
 
-The backend app lifespan creates absent database tables and marks prior waiting handoffs as lost. It does not run the SQL file in `backend/migrations` or upgrade existing columns. On Windows, run Uvicorn without `--reload`; a reload supervisor can interfere with Playwright's subprocess/IPC lifecycle. Some environments may block the Playwright driver pipe even when Chromium is installed; see [Troubleshooting](troubleshooting.md).
+The backend applies versioned additive migrations at startup and requires a 32+ character JWT signing key plus first-admin bootstrap username and password hash when authentication is enabled. Follow [Authentication and recovery](authentication-and-recovery.md) before the first API start. It marks persisted live-browser handoffs as requiring recovery; it does not restore browser cookies or page memory. On Windows, run Uvicorn without `--reload`; a reload supervisor can interfere with Playwright's subprocess/IPC lifecycle. Some environments may block the Playwright driver pipe even when Chromium is installed; see [Troubleshooting](troubleshooting.md).
 
 ## Supported Unix-like equivalent
 
@@ -93,7 +93,7 @@ For a deterministic example, submit a `POST /api/v1/workflows/run` request for m
 - Keep `.env`, SQLite DBs and runtime evidence untracked; `.gitignore` excludes them.
 - Change source behavior only with an accompanying test where feasible; run backend tests and `npm run build`.
 - Treat all target banking values as synthetic. Default seed account balances are snapshots, not transaction-ledger calculations.
-- Do not expose ports publicly: no authentication or tenant isolation exists.
+- Keep ports on local/trusted interfaces. API and evidence routes require authenticated, tenant-scoped principals; the target simulator is a separate local demo service and is not covered by API identity controls.
 - There is no formal formatter/linter configuration, contribution guide, release automation, license file, or CI workflow in this checkout.
 
 The standalone `scripts/run_replay.py` reads the savings artifact JSON mirror directly and does not fall back to SQLite. It was verified in this workspace (member 1002 `SUCCESS`, member 99999 `BUSINESS_OUTCOME`, LLM client patched to forbid calls). If the mirror is absent, use the API/console or run successful discovery first. `scripts/run_final_demo.py` changes simulator flags and creates runs, so it is not a read-only diagnostic command.

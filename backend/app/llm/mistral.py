@@ -12,6 +12,25 @@ from backend.app.core.config import settings
 from backend.app.core.errors import LLMProviderException
 from backend.app.core.logging import logger
 from backend.app.llm.base import LLMClient
+from backend.app.observability import langsmith_traceable
+
+
+@langsmith_traceable(
+    "apex.mistral.action_decision",
+    run_type="llm",
+    input_filter=lambda values: {
+        "run_id": values.get("run_id"),
+        "model": values.get("model"),
+        "input_chars": len(values.get("user_prompt", "")),
+    },
+    output_filter=lambda result: {
+        "action_type": result.get("action_type") if isinstance(result, dict) else None,
+        "has_selector": bool(result.get("selector")) if isinstance(result, dict) else False,
+        "has_value": bool(result.get("value")) if isinstance(result, dict) else False,
+    },
+)
+async def _traced_decision(client, system_prompt, user_prompt, response_schema, run_id, model):
+    return await client.generate_structured(system_prompt, user_prompt, response_schema)
 
 
 class MistralLLMClient(LLMClient):
@@ -22,6 +41,12 @@ class MistralLLMClient(LLMClient):
         self.endpoint = "https://api.mistral.ai/v1/chat/completions"
         self.last_usage: Dict[str, Any] = {}
         self.last_request_duration_ms: Optional[int] = None
+
+    async def generate_traced_decision(self, system_prompt: str, user_prompt: str, response_schema: Optional[type], run_id: str):
+        return await _traced_decision(
+            self, system_prompt, user_prompt, response_schema,
+            run_id=run_id, model=self.model,
+        )
 
     @staticmethod
     def _retry_after(response: httpx.Response, attempt: int) -> float:

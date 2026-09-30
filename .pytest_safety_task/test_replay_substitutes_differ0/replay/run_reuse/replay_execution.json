@@ -1,0 +1,55 @@
+{
+  "run_id": "run_reuse",
+  "capability_id": "member_savings_lookup",
+  "status": "SUCCESS",
+  "inputs": {
+    "member_id": "[REDACTED]"
+  },
+  "output_fields": [
+    "savings_balance",
+    "member_id"
+  ],
+  "outputs_redacted": true,
+  "steps": [
+    {
+      "step_number": 1,
+      "action_type": "navigate",
+      "target_selector": "body",
+      "status": "SUCCESS",
+      "duration_ms": 0,
+      "error": null,
+      "screenshot_path": "C:\\Users\\naman\\OneDrive\\Desktop\\interface ai\\.pytest_safety_task\\test_replay_substitutes_differ0\\replay\\run_reuse\\step_1.png",
+      "evidence_error": null
+    },
+    {
+      "step_number": 2,
+      "action_type": "fill",
+      "target_selector": "#member-id-input",
+      "status": "SUCCESS",
+      "duration_ms": 0,
+      "error": null,
+      "screenshot_path": "C:\\Users\\naman\\OneDrive\\Desktop\\interface ai\\.pytest_safety_task\\test_replay_substitutes_differ0\\replay\\run_reuse\\step_2.png",
+      "evidence_error": null
+    },
+    {
+      "step_number": 3,
+      "action_type": "click",
+      "target_selector": "#search-btn",
+      "status": "SUCCESS",
+      "duration_ms": 0,
+      "error": null,
+      "screenshot_path": "C:\\Users\\naman\\OneDrive\\Desktop\\interface ai\\.pytest_safety_task\\test_replay_substitutes_differ0\\replay\\run_reuse\\step_3.png",
+      "evidence_error": null
+    },
+    {
+      "step_number": 4,
+      "action_type": "extract",
+      "target_selector": "#savings-balance-val",
+      "status": "SUCCESS",
+      "duration_ms": 0,
+      "error": null,
+      "screenshot_path": "C:\\Users\\naman\\OneDrive\\Desktop\\interface ai\\.pytest_safety_task\\test_replay_substitutes_differ0\\replay\\run_reuse\\step_4.png",
+      "evidence_error": null
+    }
+  ]
+}

@@ -4,7 +4,35 @@ The authoritative live schema is FastAPI's `/openapi.json` and interactive `/doc
 
 ## Authentication and content type
 
-No API endpoint implements authentication or authorization. JSON POST endpoints use `Content-Type: application/json`. Keep these services on local/trusted interfaces. The browser's same-origin development proxy routes `/api` and `/evidence` to the backend.
+Except for health checks and the target simulator's explicitly local demo controls, orchestration routes require authentication and role authorization. The console uses the `HttpOnly` `apex_session` cookie; scripts can send `Authorization: Bearer <JWT>`. JSON POST/PATCH endpoints use `Content-Type: application/json`. The browser's same-origin development proxy routes `/api` and `/evidence` to the backend.
+
+### `POST /api/v1/auth/login`
+
+Authenticates by username or email and sets the `apex_session` cookie. Returns a short-lived bearer token for API clients, token type, expiry, role, and tenant ID. Invalid credentials return a generic 401. Login attempts are rate-limited per API process.
+
+```json
+{"username":"operator@example.test","password":"<operator password>"}
+```
+
+### `POST /api/v1/auth/logout` and `GET /api/v1/auth/me`
+
+Logout clears the session cookie. `/auth/me` validates the cookie or bearer JWT and returns the active operator and tenant identity. The console calls it at startup to restore an existing session after refresh.
+
+### `POST /api/v1/auth/invitations`
+
+Administrator-only. Creates an expiring, single-use invitation for the administrator's own tenant. `role` is restricted to `OPERATOR` or `VIEWER`; there is no client-supplied tenant field. The response includes the raw random invitation token once. Store and share it securely; only its SHA-256 digest is persisted.
+
+```json
+{"email":"operator@example.test","role":"OPERATOR","expires_in_minutes":1440}
+```
+
+### `POST /api/v1/auth/register`
+
+Public self-service endpoint. Input includes `full_name`, `username`, `email`, `password`, and `confirm_password`; no invitation code, tenant ID, or role is accepted. The server assigns the account to the active `default` tenant with the `OPERATOR` role. Passwords must be at least 12 characters. Duplicate identity outcomes return a generic response; attempts are rate-limited per API process. An inactive or missing default tenant prevents registration.
+
+### Operator administration
+
+`GET /api/v1/auth/operators`, `POST /api/v1/auth/operators`, `PATCH /api/v1/auth/operators/{operator_id}`, and `PATCH /api/v1/auth/operators/{operator_id}/disable` require an administrator and are tenant-scoped. `GET/POST /api/v1/auth/tenants` and `PATCH /api/v1/auth/tenants/{tenant_id}/disable` are restricted to the default-tenant administrator.
 
 ## Workflow endpoints
 
